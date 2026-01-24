@@ -1,0 +1,20 @@
+# 核心依赖
+PySide6>=6.6.0
+PySide6-Fluent-Widgets>=1.7.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+pillow>=10.0.0
+
+# 加密和数据处理
+pycryptodome>=3.18.0
+python-docx>=0.8.11
+openpyxl>=3.1.0
+
+# 导出功能
+reportlab>=4.0.0
+xlsxwriter>=3.1.0
+
+# 网络和解析优化
+urllib3>=2.0.0
+lxml>=4.9.0
+

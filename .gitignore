@@ -1,0 +1,58 @@
+# ========== Python ==========
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+*.manifest
+*.spec
+
+# ========== 虚拟环境 ==========
+.venv/
+venv/
+ENV/
+env/
+
+# ========== IDE ==========
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ========== PyInstaller / Nuitka ==========
+dist/
+build/
+dist_nuitka/
+*.spec
+
+# ========== 构建脚本 (本地使用) ==========
+start.py
+build.py
+build_nuitka.py
+version_info.txt
+
+# ========== 应用运行时生成 ==========
+*.log
+app_config.json
+course_images/
+exports/
+startup_error.txt
+
+# ========== 系统文件 ==========
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========== 测试/临时 ==========
+.pytest_cache/
+.coverage
+htmlcov/
+*.tmp
+*.bak
