@@ -10,7 +10,7 @@
 **一款现代化的超星学习通作业题目导出桌面应用**
 
 [📥 立即下载](https://github.com/wjn6/CXHarvest/releases) · 
-[🐛 问题反馈](https://github.com/wjn6/CXHarvest/issues) · 
+[🐛 问题反馈](https://github.com/wjn6/CXHarvest/issues)
 
 </div>
 
