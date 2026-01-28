@@ -66,32 +66,31 @@ class QuestionCard(CardWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(8)
         
         # 顶部：序号 + 类型 + 选择框
         top_layout = QHBoxLayout()
         
-        # 序号
-        self.index_label = CaptionLabel(f"第 {self.index + 1} 题", self)
-        self.index_label.setStyleSheet("color: #888888;")
+        # 序号和类型组合
+        q_type = self.question_data.get('type', '未知')
+        self.index_label = CaptionLabel(f"第 {self.index + 1} 题 · {q_type}", self)
+        self.index_label.setStyleSheet("color: #666666;")
         top_layout.addWidget(self.index_label)
         
-        # 题目类型
-        q_type = self.question_data.get('type', '未知')
-        self.type_label = CaptionLabel(f"[{q_type}]", self)
-        self.type_label.setStyleSheet("color: #3498db; font-weight: bold;")
-        top_layout.addWidget(self.type_label)
-        
-        # 正确/错误标记
+        # 正确/错误标记 - 仅对客观题显示
         is_correct = self.question_data.get('isCorrect', None)
-        if is_correct is True:
-            status_label = CaptionLabel("正确", self)
-            status_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+        # 客观题类型
+        objective_types = ['单选题', '多选题', '判断题', '选择题']
+        is_objective = any(ot in q_type for ot in objective_types)
+        
+        if is_objective and is_correct is True:
+            status_label = CaptionLabel("✓ 正确", self)
+            status_label.setStyleSheet("color: #27ae60; font-weight: 500;")
             top_layout.addWidget(status_label)
-        elif is_correct is False:
-            status_label = CaptionLabel("错误", self)
-            status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        elif is_objective and is_correct is False:
+            status_label = CaptionLabel("✗ 错误", self)
+            status_label.setStyleSheet("color: #e74c3c; font-weight: 500;")
             top_layout.addWidget(status_label)
         
         top_layout.addStretch()
@@ -122,9 +121,13 @@ class QuestionCard(CardWidget):
             images_layout.addStretch()
             layout.addLayout(images_layout)
         
-        # 选项（如果有）
+        # 选项（如果有）- 主观题不显示选项
         options = self.question_data.get('options', [])
-        if options:
+        # 主观题类型列表（不显示选项）
+        subjective_types = ['简答题', '填空题', '论述题', '问答题', '解答题', '计算题', '分析题', '综合题']
+        is_subjective = any(st in q_type for st in subjective_types)
+        
+        if options and not is_subjective:
             options_layout = QVBoxLayout()
             options_layout.setSpacing(4)
             for opt in options:
@@ -159,20 +162,19 @@ class QuestionCard(CardWidget):
         
         my_answer_container = QVBoxLayout()
         my_answer_header = QHBoxLayout()
-        my_answer_title = StrongBodyLabel("我的答案:", self)
-        my_answer_title.setStyleSheet("color: #3498db;")
+        my_answer_title = CaptionLabel("我的答案:", self)
+        my_answer_title.setStyleSheet("color: #2980b9;")
         my_answer_header.addWidget(my_answer_title)
         
         if my_answer:
-            # 截断过长的答案
             display_answer = my_answer[:200] + '...' if len(my_answer) > 200 else my_answer
             my_answer_text = BodyLabel(display_answer, self)
             my_answer_text.setWordWrap(True)
-            my_answer_text.setStyleSheet("color: #3498db;")
+            my_answer_text.setStyleSheet("color: #333;")
             my_answer_header.addWidget(my_answer_text, 1)
         else:
             my_answer_text = BodyLabel("(未作答)", self)
-            my_answer_text.setStyleSheet("color: #999;")
+            my_answer_text.setStyleSheet("color: #aaa;")
             my_answer_header.addWidget(my_answer_text, 1)
         
         my_answer_container.addLayout(my_answer_header)
@@ -196,17 +198,18 @@ class QuestionCard(CardWidget):
         
         answer_container = QVBoxLayout()
         answer_header = QHBoxLayout()
-        answer_title = StrongBodyLabel("正确答案:", self)
+        answer_title = CaptionLabel("正确答案:", self)
         answer_title.setStyleSheet("color: #27ae60;")
         answer_header.addWidget(answer_title)
         
         if answer:
             display_correct = answer[:200] + '...' if len(answer) > 200 else answer
             answer_text = BodyLabel(display_correct, self)
+            answer_text.setStyleSheet("color: #333;")
         else:
             answer_text = BodyLabel("(未设置)", self)
+            answer_text.setStyleSheet("color: #aaa;")
         answer_text.setWordWrap(True)
-        answer_text.setStyleSheet("color: #27ae60;")
         answer_header.addWidget(answer_text, 1)
         answer_container.addLayout(answer_header)
         
@@ -658,24 +661,22 @@ class QuestionListFluent(QWidget):
         self.content_layout.addStretch()
     
     def _create_section_header(self, section_title: str):
-        """创建分组标题卡片"""
+        """创建分组标题卡片 - 简洁风格"""
         header = QFrame(self.content_widget)
         header.setStyleSheet("""
             QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #3498db, stop:1 #2ecc71);
-                border-radius: 8px;
-                padding: 8px;
-                margin-top: 12px;
+                background: #16a085;
+                border-radius: 6px;
+                margin-top: 8px;
             }
         """)
         
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setContentsMargins(16, 8, 16, 8)
         
         # 分组标题
         title_label = SubtitleLabel(section_title, header)
-        title_label.setStyleSheet("color: white; font-weight: bold;")
+        title_label.setStyleSheet("color: white; font-weight: 500;")
         layout.addWidget(title_label)
         
         layout.addStretch()

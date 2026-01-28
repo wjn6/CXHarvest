@@ -193,7 +193,7 @@ class HomeworkQuestionManager:
                 return '问答题'
 
     def is_valid_question(self, text: str) -> bool:
-        """判断是否为有效题目
+        """判断是否为有效题目 - 宽松策略，优先保留题目
         
         过滤掉分数统计信息、题型分组标题等无效内容，
         只保留真正的题目文本。
@@ -204,51 +204,75 @@ class HomeworkQuestionManager:
         Returns:
             bool: 是否为有效的题目文本
         """
-        if not text or len(text.strip()) < 5:
+        if not text:
             return False
         
         text = text.strip()
         
-        # 过滤掉分数统计信息
+        # 长度太短直接拒绝
+        if len(text) < 2:
+            return False
+        
+        # ========== 明确排除的无效内容 ==========
         invalid_patterns = [
-            r'^一\.\s*单选题.*分.*',      # 一. 单选题（73.2分）...
-            r'^二\.\s*多选题.*分.*',      # 二. 多选题（26.8分）...
-            r'^三\.\s*判断题.*分.*',      # 三. 判断题（XX分）...
-            r'^四\.\s*填空题.*分.*',      # 四. 填空题（XX分）...
-            r'^五\.\s*问答题.*分.*',      # 五. 问答题（XX分）...
-            r'^六\.\s*.*题.*分.*',        # 六. XX题（XX分）...
-            r'^\d+\.\d+分$',             # 纯分数
-            r'^总分.*分',                # 总分信息
-            r'^得分.*分',                # 得分信息
-            r'^分数.*分',                # 分数信息
-            r'^\d+分$',                  # 纯数字分数
-            r'^[一二三四五六七八九十]\.\s*[单多判填问].*题.*分',  # 中文数字开头的题型分数
+            r'^[一二三四五六七八九十]+[\.、]\s*[单多判填问简论].*题.*共?\d+.*分',  # 题型分组标题
+            r'^[一二三四五六七八九十]+[\.、]\s*[单多判填问简论].*题.*\d+题',      # 题型统计
+            r'^\d+\.\d+分$',             # 纯分数如 "2.5分"
+            r'^总分[：:]\s*\d+',          # 总分信息
+            r'^得分[：:]\s*\d+',          # 得分信息
+            r'^满分[：:]\s*\d+',          # 满分信息
+            r'^共\d+题',                  # "共10题"
+            r'^本大题共\d+',              # "本大题共..."
         ]
         
         for pattern in invalid_patterns:
-            if re.match(pattern, text):
+            if re.match(pattern, text, re.IGNORECASE):
                 return False
         
-        # 检查是否只包含数字（题目序号列表）
-        if re.match(r'^\d+$', text) or re.match(r'^[\d\s]+$', text):
+        # 检查是否只包含数字
+        if re.match(r'^[\d\s]+$', text):
             return False
         
-        # 必须包含有效的题目特征
-        valid_patterns = [
-            r'\d+\.\s*\([^)]+\).*[？?。.]',    # 1.(单选题)...？
-            r'\d+\.\s*\([^)]+\).*（.*）',      # 1.(单选题)...（）
-            r'\d+\.\s*[^(].*[？?。.]',         # 1.题目内容？
-            r'\d+\.\s*[^(].*（.*）',           # 1.题目内容（）
-        ]
+        # ========== 宽松的有效题目判断 ==========
+        # 策略1: 以数字序号开头
+        if re.match(r'^\d+[\.、\s\)]', text):
+            return True
         
-        for pattern in valid_patterns:
-            if re.search(pattern, text):
-                return True
+        # 策略2: 包含题型标记
+        if re.search(r'[\(\（\[\【][单多判填问简论].*?题[\)\）\]\】]', text):
+            return True
+        
+        # 策略3: 以括号序号开头
+        if re.match(r'^[\(\（]\d+[\)\）]', text):
+            return True
+        
+        # 策略4: 包含问号（很可能是题目）
+        if '?' in text or '？' in text:
+            return True
+        
+        # 策略5: 包含选项标记
+        if re.search(r'[ABCD][\.、\s]', text):
+            return True
+        
+        # 策略6: 长度足够（>10字符），且包含中文
+        if len(text) > 10 and re.search(r'[\u4e00-\u9fff]', text):
+            return True
+        
+        # 策略7: 包含常见题目关键词
+        question_keywords = ['下列', '以下', '关于', '属于', '不属于', '正确', '错误', 
+                            '选择', '判断', '说法', '描述', '表述', '理解', '分析',
+                            '计算', '解答', '简述', '论述', '请', '试']
+        if any(kw in text for kw in question_keywords):
+            return True
+        
+        # 策略8: 最后的宽松判断 - 只要有中文内容且长度>5
+        if len(text) > 5 and re.search(r'[\u4e00-\u9fff]', text):
+            return True
         
         return False
 
     def extract_question_text(self, container: Any) -> str:
-        """提取题目文本
+        """提取题目文本 - 多策略增强版
         
         从题目容器中提取题目的文本内容，支持多种提取策略。
         
@@ -259,27 +283,101 @@ class HomeworkQuestionManager:
             str: 提取到的题目文本，失败时返回空字符串
         """
         try:
-            # 方法1: 查找 .mark_name 元素
+            # 辅助函数：清洗题目文本
+            def clean_text(raw_text):
+                if not raw_text:
+                    return ''
+                separators = ['我的答案', '正确答案', '答案解析', 'Answer:', 'Correct Answer:']
+                for sep in separators:
+                    if sep in raw_text:
+                        raw_text = raw_text.split(sep)[0]
+                return raw_text.strip()
+
+            # ========== 策略1: .mark_name 元素（最常用） ==========
             mark_name = container.find(class_='mark_name')
             if mark_name:
                 text = mark_name.get_text(strip=True)
-                if self.is_valid_question(text):
+                text = clean_text(text)
+                if text and len(text) > 3:
                     return text
             
-            # 方法2: 查找题目序号模式
+            # ========== 策略2: h3 标题元素（OCS策略） ==========
+            h3_title = container.find('h3')
+            if h3_title:
+                full_text = h3_title.get_text(strip=True)
+                cleaned = re.sub(r'^\d+[\.、\s\)]+\s*', '', full_text)
+                cleaned = re.sub(r'^[\[\(\（\【].*?题[\]\)\）\】]\s*', '', cleaned)
+                cleaned = clean_text(cleaned)
+                if cleaned and len(cleaned) > 3:
+                    return cleaned
+            
+            # ========== 策略3: .qtContent 元素 ==========
+            qt_content = container.find(class_='qtContent')
+            if qt_content:
+                text = qt_content.get_text(strip=True)
+                text = clean_text(text)
+                if text and len(text) > 3:
+                    return text
+            
+            # ========== 策略4: .Zy_TItle / .newZy_TItle 元素 ==========
+            for cls in ['Zy_TItle', 'newZy_TItle', 'Cy_TItle']:
+                zy_title = container.find(class_=cls)
+                if zy_title:
+                    text = zy_title.get_text(strip=True)
+                    text = clean_text(text)
+                    if text and len(text) > 3:
+                        return text
+            
+            # ========== 策略5: .TiMu 元素 ==========
+            timu = container.find(class_='TiMu')
+            if timu:
+                text = timu.get_text(strip=True)
+                text = clean_text(text)
+                if text and len(text) > 3:
+                    return text
+            
+            # ========== 策略6: .stem / .stem_question 元素 ==========
+            for cls in ['stem', 'stem_question', 'question-stem']:
+                stem = container.find(class_=cls)
+                if stem:
+                    text = stem.get_text(strip=True)
+                    text = clean_text(text)
+                    if text and len(text) > 3:
+                        return text
+            
+            # ========== 策略7: 从文本行中查找题目 ==========
             text_content = container.get_text()
-            question_match = re.search(r'(\d+\.\s*.*?)(?=\n|$)', text_content, re.DOTALL)
-            if question_match:
-                text = question_match.group(1).strip()
-                if self.is_valid_question(text):
+            lines = text_content.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line or len(line) < 5:
+                    continue
+                
+                cleaned_line = clean_text(line)
+                
+                if any(kw in cleaned_line for kw in ['我的答案', '正确答案', '得分', '分数']):
+                    continue
+                
+                if re.match(r'^\d+[\.、\s\)]', cleaned_line):
+                    return cleaned_line
+                
+                if re.search(r'[\(\（\[\【][单多判填问简].*?题[\)\）\]\】]', cleaned_line):
+                    return cleaned_line
+            
+            # ========== 策略8: 正则匹配整段题目 ==========
+            match = re.search(r'(\d+[\.、\s].*?)(?=我的答案|正确答案|A[\.、\s]|B[\.、\s]|$)', text_content, re.DOTALL)
+            if match:
+                text = match.group(1).strip()
+                text = clean_text(text)
+                if text and len(text) > 5:
                     return text
             
-            # 方法3: 返回容器的前部分文本
-            lines = text_content.split('\n')
-            for line in lines[:3]:  # 只检查前3行
-                if line.strip() and len(line.strip()) > 10:
-                    if self.is_valid_question(line.strip()):
-                        return line.strip()
+            # ========== 策略9: 最后尝试 - 取容器前200字符 ==========
+            full_text = container.get_text(strip=True)
+            if full_text:
+                text = clean_text(full_text[:200])
+                if text and len(text) > 5:
+                    return text
             
         except Exception as e:
             app_logger.warning("提取题目文本失败", {"error": str(e)})
@@ -542,30 +640,69 @@ class HomeworkQuestionManager:
             # 解析HTML
             soup = BeautifulSoup(response.content, 'html.parser')
 
-            # 查找题目容器 - 基于您原始逻辑，添加 .questionLi 支持
+            # ========== 多策略题目容器识别（参考v1.31chaoxing.js） ==========
             question_containers = []
             
-            # 方法1: 直接查找 .questionLi 元素（最精确的题目分隔符）
-            question_li_elements = soup.find_all(class_='questionLi')
-            if question_li_elements:
-                app_logger.info(f"发现 {len(question_li_elements)} 个 questionLi 元素")
-                question_containers = question_li_elements
+            # 策略1: .mark_item - 最常用的题目容器（优先级最高）
+            mark_items = soup.find_all(class_='mark_item')
+            if mark_items:
+                question_containers.extend(mark_items)
+                app_logger.info(f"策略1: 发现 {len(mark_items)} 个 mark_item 元素")
             
-            # 方法2: 如果没找到 questionLi，使用您的原始逻辑
+            # 策略2: .questionLi - OCS标准容器
             if not question_containers:
-                app_logger.info("使用原始逻辑：查找 mark_name 父容器")
+                question_li = soup.find_all(class_='questionLi')
+                if question_li:
+                    question_containers.extend(question_li)
+                    app_logger.info(f"策略2: 发现 {len(question_li)} 个 questionLi 元素")
+            
+            # 策略3: .TiMu - 另一种常见容器
+            if not question_containers:
+                timu_elements = soup.find_all(class_='TiMu')
+                if timu_elements:
+                    question_containers.extend(timu_elements)
+                    app_logger.info(f"策略3: 发现 {len(timu_elements)} 个 TiMu 元素")
+            
+            # 策略4: div[data] 带题目ID的元素
+            if not question_containers:
+                data_divs = soup.find_all('div', attrs={'data': True})
+                for div in data_divs:
+                    if div.find(class_=['mark_name', 'Zy_TItle', 'qtContent']):
+                        question_containers.append(div)
+                if question_containers:
+                    app_logger.info(f"策略4: 发现 {len(question_containers)} 个带data属性的题目元素")
+            
+            # 策略5: 查找包含 .mark_name 的父容器
+            if not question_containers:
                 mark_names = soup.find_all(class_='mark_name')
                 for mark_name in mark_names:
-                    # 找到包含完整题目信息的父容器
                     parent = mark_name.parent
-                    while parent and not parent.find(class_='mark_answer'):
+                    for _ in range(5):
+                        if parent is None:
+                            break
+                        if parent.find(class_=['mark_answer', 'stuAnswerContent', 'rightAnswerContent']):
+                            if parent not in question_containers:
+                                question_containers.append(parent)
+                            break
                         parent = parent.parent
-                    if parent and parent not in question_containers:
-                        question_containers.append(parent)
-
-            # 方法3: 如果还没找到，使用备用方法
+                if question_containers:
+                    app_logger.info(f"策略5: 通过mark_name父容器发现 {len(question_containers)} 个题目")
+            
+            # 策略6: .Py-mian1 - 考试页面容器
             if not question_containers:
-                question_containers = soup.find_all('div', class_=lambda x: x and ('question' in x.lower() or 'topic' in x.lower()))
+                py_mian = soup.find_all(class_='Py-mian1')
+                if py_mian:
+                    question_containers.extend(py_mian)
+                    app_logger.info(f"策略6: 发现 {len(py_mian)} 个 Py-mian1 元素")
+            
+            # 策略7: 通用备用方法
+            if not question_containers:
+                generic_containers = soup.find_all('div', class_=lambda x: x and any(
+                    kw in x.lower() for kw in ['question', 'topic', 'item', 'ques']
+                ))
+                if generic_containers:
+                    question_containers.extend(generic_containers)
+                    app_logger.info(f"策略7: 通用方法发现 {len(generic_containers)} 个可能的题目容器")
 
             app_logger.info(f"找到 {len(question_containers)} 个题目容器")
 

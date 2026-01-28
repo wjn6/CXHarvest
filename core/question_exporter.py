@@ -11,7 +11,6 @@
 - PDF：通用便携格式
 - Markdown：纯文本标记格式
 
-Author: 综合优化版
 """
 
 import os

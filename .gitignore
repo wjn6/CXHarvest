@@ -44,6 +44,7 @@ app_config.json
 course_images/
 exports/
 startup_error.txt
+data/
 
 # ========== 系统文件 ==========
 .DS_Store
@@ -56,3 +57,5 @@ desktop.ini
 htmlcov/
 *.tmp
 *.bak
+data/session.txt
+/data

@@ -1,25 +1,132 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-超星学习通作业题目解析器 - @yingyong集成版
-参考JavaScript用户脚本的解析逻辑，提取作业中的题目、选项、答案等信息
-支持图片Base64编码和分区域存储，完整的得分和正确性信息
-作者: Augment Agent
-版本: 3.0 - 集成@yingyong登录管理器
+超星学习通作业题目解析器 - 史诗级增强版
+整合 v1.31chaoxing.js、OCS、chaoxing_scrapper 等脚本的优秀技术
+支持：混排内容解析、智能选项识别、答案相似度匹配、图片嵌入等高级功能
 """
 
 import os
 import json
 import base64
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, Tag
 import re
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from PIL import Image
 import io
 import time
+from copy import copy
 from .enterprise_logger import app_logger
+
+
+# =====================================================================
+# OCS 题型值映射系统 (来自 ocs.common.user.js)
+# =====================================================================
+OCS_QUESTION_TYPE_MAP = {
+    0: '单选题',
+    1: '多选题', 
+    2: '填空题',
+    3: '判断题',
+    4: '简答题',
+    5: '填空题',  # 名词解释
+    6: '填空题',  # 论述题
+    7: '填空题',  # 计算题
+    8: '填空题',  # 分录题
+    9: '填空题',  # 资料题
+    10: '填空题', # 其他
+    11: '连线题',
+    14: '完形填空',
+    15: '阅读理解'
+}
+
+# =====================================================================
+# 超全学习通DOM选择器配置 (整合所有脚本)
+# =====================================================================
+CHAOXING_SELECTORS = {
+    # 题目容器选择器（按优先级排序）
+    'question_containers': [
+        '.mark_item',           # 最常用
+        '.questionLi',          # OCS标准
+        '.TiMu',                # 常见变体
+        '.Py-mian1',            # 考试页面
+        '.queBox',              # 问答框
+        '.stem_question',       # 题干容器
+        'div[data]',            # 带题目ID
+    ],
+    # 题目标题/内容选择器
+    'question_title': [
+        '.mark_name',           # 标准
+        'h3.mark_name',         # 精确h3
+        '.qtContent',           # 内容区
+        '.Zy_TItle',            # 作业标题
+        '.newZy_TItle',         # 新版标题
+        '.Cy_TItle',            # 测验标题
+        '.stem',                # 题干
+        '.question-stem',       # 题干变体
+    ],
+    # 选项选择器
+    'options': [
+        '.mark_letter li',      # 标准选项
+        '.mark_letter div',     # div选项
+        '.answerBg .answer_p',  # OCS选项
+        '.textDIV',             # 文本选项
+        '.eidtDiv',             # 编辑区选项
+        '.Zy_ulTop li',         # 作业选项
+        '.ulAnswer li',         # 答案列表
+        '.optionUl li',         # 选项列表
+        '.qtDetail li',         # 详情选项
+        '.radio-view li.clearfix',  # 单选视图
+        '.checklist-view label',    # 多选视图
+    ],
+    # 我的答案选择器
+    'my_answer': [
+        '.stuAnswerContent',    # 标准
+        '.colorDeep dd',        # 深色答案
+        '.answerCon',           # 答案内容
+        '.myAnswer',            # 我的答案
+    ],
+    # 正确答案选择器
+    'correct_answer': [
+        '.rightAnswerContent',  # 标准
+        '.colorGreen dd',       # 绿色答案
+        '.answer',              # 答案
+        '.key',                 # 答案键
+        '.rightAnswer',         # 正确答案
+    ],
+    # 解析选择器
+    'explanation': [
+        '.qtAnalysis',          # 题目解析
+        '.mark_explain',        # 解释
+        '.analysis',            # 分析
+        '.explanation',         # 解释
+    ],
+    # 得分选择器
+    'score': [
+        '.totalScore i',        # 总分
+        '.mark_score i',        # 分数
+        '.score',               # 分数
+    ],
+    # 正确/错误标记选择器
+    'correct_mark': [
+        '.marking_dui',         # 对勾
+        '.correct',             # 正确
+        '.right',               # 对
+    ],
+    'wrong_mark': [
+        '.marking_cuo',         # 叉号
+        '.wrong',               # 错误
+        '.error',               # 错
+    ],
+    # 题型标记选择器
+    'question_type': [
+        '.colorShallow',        # 浅色标记
+        'input[id^="answertype"]',  # OCS类型
+        'input[name^="type"]',  # 类型输入
+    ],
+}
+
 
 class HomeworkQuestionParser:
     """超星学习通作业题目解析器"""
@@ -32,7 +139,319 @@ class HomeworkQuestionParser:
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0'
         }
-        app_logger.success("题目解析器初始化完成")
+        app_logger.success("题目解析器初始化完成 (史诗级增强版)")
+
+    # =====================================================================
+    # 核心增强功能：混排内容解析 (来自 v1.31chaoxing.js parseMixedContent)
+    # =====================================================================
+    def parse_mixed_content(self, element):
+        """
+        解析混排内容，保持文字和图片的原始顺序
+        返回: {'text': 纯文本, 'html': 带图片占位符的HTML, 'items': 混排项列表}
+        """
+        if not element:
+            return {'text': '', 'html': '', 'items': []}
+        
+        items = []
+        text_parts = []
+        html_parts = []
+        
+        try:
+            # 遍历所有子节点，保持顺序
+            for child in element.children:
+                if isinstance(child, NavigableString):
+                    # 文本节点
+                    text = str(child).strip()
+                    if text:
+                        items.append({'type': 'text', 'content': text})
+                        text_parts.append(text)
+                        html_parts.append(text)
+                elif isinstance(child, Tag):
+                    if child.name == 'img':
+                        # 图片节点
+                        src = child.get('src', '')
+                        alt = child.get('alt', '图片')
+                        if src:
+                            base64_data = self.get_image_as_base64(src)
+                            items.append({
+                                'type': 'image',
+                                'src': src,
+                                'alt': alt,
+                                'data': base64_data
+                            })
+                            text_parts.append(f'[图片:{alt}]')
+                            html_parts.append(f'<img src="{base64_data or src}" alt="{alt}"/>')
+                    elif child.name == 'br':
+                        items.append({'type': 'br'})
+                        text_parts.append('\n')
+                        html_parts.append('<br/>')
+                    else:
+                        # 递归处理子元素
+                        sub_result = self.parse_mixed_content(child)
+                        items.extend(sub_result['items'])
+                        text_parts.append(sub_result['text'])
+                        html_parts.append(sub_result['html'])
+        except Exception as e:
+            app_logger.warning(f"解析混排内容失败: {e}")
+            # 降级处理
+            return {
+                'text': element.get_text(strip=True),
+                'html': str(element),
+                'items': [{'type': 'text', 'content': element.get_text(strip=True)}]
+            }
+        
+        return {
+            'text': ' '.join(text_parts),
+            'html': ''.join(html_parts),
+            'items': items
+        }
+
+    # =====================================================================
+    # 核心增强功能：智能选项解析 (来自 v1.31chaoxing.js parseOptionContent)
+    # =====================================================================
+    def parse_option_content(self, option_element):
+        """
+        智能解析选项内容，自动识别纯图片选项、纯文本选项、混排选项
+        返回: {'label': 'A', 'content': 内容, 'is_image_only': bool, 'images': []}
+        """
+        if not option_element:
+            return None
+        
+        try:
+            # 获取所有图片
+            images = option_element.find_all('img')
+            text = option_element.get_text(strip=True)
+            
+            # 尝试提取选项标签 (A, B, C, D...)
+            label = ''
+            label_match = re.match(r'^([A-Z])[\.、\s：:]', text)
+            if label_match:
+                label = label_match.group(1)
+                text = text[len(label_match.group(0)):].strip()
+            
+            # 判断选项类型
+            has_images = len(images) > 0
+            has_text = len(text) > 0 and text not in ['', ' ']
+            
+            # 处理图片
+            image_data_list = []
+            for img in images:
+                src = img.get('src', '')
+                if src:
+                    base64_data = self.get_image_as_base64(src)
+                    image_data_list.append({
+                        'src': src,
+                        'alt': img.get('alt', '选项图片'),
+                        'data': base64_data
+                    })
+            
+            # 确定选项类型和内容
+            if has_images and not has_text:
+                # 纯图片选项
+                return {
+                    'label': label,
+                    'content': f'[图片选项: {len(images)}张]',
+                    'is_image_only': True,
+                    'images': image_data_list,
+                    'mixed_content': self.parse_mixed_content(option_element)
+                }
+            elif has_images and has_text:
+                # 混排选项
+                return {
+                    'label': label,
+                    'content': text,
+                    'is_image_only': False,
+                    'images': image_data_list,
+                    'mixed_content': self.parse_mixed_content(option_element)
+                }
+            else:
+                # 纯文本选项
+                return {
+                    'label': label,
+                    'content': text,
+                    'is_image_only': False,
+                    'images': [],
+                    'mixed_content': {'text': text, 'html': text, 'items': [{'type': 'text', 'content': text}]}
+                }
+        except Exception as e:
+            app_logger.warning(f"解析选项内容失败: {e}")
+            return {
+                'label': '',
+                'content': option_element.get_text(strip=True),
+                'is_image_only': False,
+                'images': [],
+                'mixed_content': None
+            }
+
+    # =====================================================================
+    # 核心增强功能：答案相似度匹配 (来自 chaoxing_scrapper matchAnswerWithOptions)
+    # =====================================================================
+    def calculate_similarity(self, str1, str2):
+        """计算两个字符串的相似度"""
+        if not str1 or not str2:
+            return 0.0
+        
+        str1 = str1.lower().strip()
+        str2 = str2.lower().strip()
+        
+        # 完全包含关系
+        if str1 in str2:
+            return 0.9
+        if str2 in str1:
+            return 0.8
+        
+        # 字符匹配
+        shorter, longer = (str1, str2) if len(str1) < len(str2) else (str2, str1)
+        match_count = sum(1 for char in shorter if char in longer)
+        
+        return match_count / len(shorter) if shorter else 0.0
+
+    def match_answer_with_options(self, answer, options):
+        """
+        将答案文本与选项进行智能匹配
+        answer: 答案文本
+        options: 选项列表 [{'label': 'A', 'content': '内容'}, ...]
+        返回: 匹配到的选项标签，如 'A' 或 'AB'
+        """
+        if not answer or not options:
+            return ''
+        
+        answer = answer.strip()
+        
+        # 如果答案已经是选项标签格式 (A, B, AB, ABC等)
+        if re.match(r'^[A-Z]+$', answer.upper()):
+            return answer.upper()
+        
+        # 检测多选题答案（包含分隔符）
+        is_multiple = any(sep in answer for sep in ['#', '\n', '、', ',', '，'])
+        
+        if is_multiple:
+            # 多选题：分割答案并匹配
+            keywords = re.split(r'[#\n、,，]+', answer)
+            matched_labels = []
+            
+            for keyword in keywords:
+                keyword = keyword.strip()
+                if not keyword:
+                    continue
+                
+                best_match = None
+                best_score = 0.3  # 最小阈值
+                
+                for opt in options:
+                    similarity = self.calculate_similarity(keyword, opt.get('content', ''))
+                    if similarity > best_score:
+                        best_score = similarity
+                        best_match = opt.get('label', '')
+                
+                if best_match and best_match not in matched_labels:
+                    matched_labels.append(best_match)
+            
+            return ''.join(sorted(matched_labels))
+        else:
+            # 单选题：找最佳匹配
+            best_match = None
+            best_score = 0.3
+            
+            for opt in options:
+                # 精确匹配
+                if opt.get('content', '').strip() == answer:
+                    return opt.get('label', '')
+                
+                # 相似度匹配
+                similarity = self.calculate_similarity(answer, opt.get('content', ''))
+                if similarity > best_score:
+                    best_score = similarity
+                    best_match = opt.get('label', '')
+            
+            return best_match or ''
+
+    # =====================================================================
+    # 核心增强功能：使用配置的选择器查找元素
+    # =====================================================================
+    def find_by_selectors(self, container, selector_key, find_all=False):
+        """
+        使用配置的选择器列表查找元素
+        selector_key: CHAOXING_SELECTORS 中的键名
+        find_all: 是否返回所有匹配元素
+        """
+        selectors = CHAOXING_SELECTORS.get(selector_key, [])
+        
+        for selector in selectors:
+            try:
+                if find_all:
+                    elements = container.select(selector)
+                    if elements:
+                        return elements
+                else:
+                    element = container.select_one(selector)
+                    if element:
+                        return element
+            except Exception:
+                continue
+        
+        return [] if find_all else None
+
+    # =====================================================================
+    # 核心增强功能：OCS题型识别
+    # =====================================================================
+    def determine_question_type_ocs(self, container):
+        """
+        使用OCS策略识别题目类型
+        优先级: 隐藏input值 > colorShallow标记 > 文本关键词 > 选项推断
+        """
+        try:
+            # 策略1: 查找隐藏的题型input
+            type_input = container.select_one('input[id^="answertype"]') or \
+                        container.select_one('input[name^="type"]')
+            
+            if type_input and type_input.get('value'):
+                try:
+                    val = int(type_input.get('value'))
+                    if val in OCS_QUESTION_TYPE_MAP:
+                        return OCS_QUESTION_TYPE_MAP[val]
+                except ValueError:
+                    pass
+            
+            # 策略2: 从colorShallow提取
+            color_shallow = container.select_one('.colorShallow')
+            if color_shallow:
+                type_text = color_shallow.get_text(strip=True)
+                type_text = re.sub(r'[\(\)\（\）\[\]\【\】]', '', type_text).strip()
+                if type_text and '题' in type_text:
+                    return type_text
+            
+            # 策略3: 从题目文本中提取
+            text_content = container.get_text().lower()
+            type_keywords = [
+                ('单选题', ['单选题', 'single', '单选']),
+                ('多选题', ['多选题', 'multiple', '多选']),
+                ('判断题', ['判断题', 'true', 'false', '判断']),
+                ('填空题', ['填空题', 'blank', '填空']),
+                ('简答题', ['简答题', '问答题', 'essay', '简答', '论述']),
+            ]
+            
+            for type_name, keywords in type_keywords:
+                if any(kw in text_content for kw in keywords):
+                    return type_name
+            
+            # 策略4: 根据选项类型推断
+            radios = container.select('input[type="radio"]')
+            checkboxes = container.select('input[type="checkbox"]')
+            
+            if checkboxes:
+                return '多选题'
+            elif radios:
+                return '判断题' if len(radios) == 2 else '单选题'
+            elif re.search(r'[ABCD][\.、]', text_content):
+                options_count = len(re.findall(r'[ABCD][\.、]', text_content))
+                return '单选题' if options_count <= 4 else '多选题'
+            
+            return '简答题'
+            
+        except Exception as e:
+            app_logger.warning(f"OCS题型识别失败: {e}")
+            return '未知'
 
     def check_login(self):
         """检查登录状态"""
@@ -220,54 +639,77 @@ class HomeworkQuestionParser:
             return '未知'
 
     def is_valid_question(self, text):
-        """判断是否为有效题目"""
-        if not text or len(text.strip()) < 2:  # 放宽长度限制
+        """判断是否为有效题目 - 宽松策略，优先保留题目"""
+        if not text:
             return False
         
         text = text.strip()
         
-        # 过滤掉分数统计信息
+        # 长度太短直接拒绝
+        if len(text) < 2:
+            return False
+        
+        # ========== 明确排除的无效内容 ==========
         invalid_patterns = [
-            r'^一\.\s*单选题.*分.*',      # 一. 单选题（73.2分）...
-            r'^二\.\s*多选题.*分.*',      # 二. 多选题（26.8分）...
-            r'^三\.\s*判断题.*分.*',      # 三. 判断题（XX分）...
-            r'^四\.\s*填空题.*分.*',      # 四. 填空题（XX分）...
-            r'^五\.\s*问答题.*分.*',      # 五. 问答题（XX分）...
-            r'^六\.\s*.*题.*分.*',        # 六. XX题（XX分）...
-            r'^\d+\.\d+分$',             # 纯分数
-            r'^总分.*分',                # 总分信息
-            r'^得分.*分',                # 得分信息
-            r'^分数.*分',                # 分数信息
+            r'^[一二三四五六七八九十]+[\.、]\s*[单多判填问简论].*题.*共?\d+.*分',  # 题型分组标题
+            r'^[一二三四五六七八九十]+[\.、]\s*[单多判填问简论].*题.*\d+题',      # 题型统计
+            r'^\d+\.\d+分$',             # 纯分数如 "2.5分"
+            r'^总分[：:]\s*\d+',          # 总分信息
+            r'^得分[：:]\s*\d+',          # 得分信息
+            r'^满分[：:]\s*\d+',          # 满分信息
+            r'^共\d+题',                  # "共10题"
+            r'^本大题共\d+',              # "本大题共..."
         ]
         
         for pattern in invalid_patterns:
-            if re.match(pattern, text):
+            if re.match(pattern, text, re.IGNORECASE):
                 return False
         
-        # 只要是以数字开头，或者包含特定的题型标记，就认为是题目
-        valid_starters = [
-            r'^\d+[\.、\s]',           # 1. 题目
-            r'^\(\d+\)',               # (1) 题目
-            r'^\[.*?题\]',             # [单选题] 题目
-            r'^\(.*?题\)',             # (单选题) 题目
-            r'^\d+\s*\(.*?题\)',       # 1 (单选题)
-        ]
+        # ========== 宽松的有效题目判断 ==========
+        # 策略1: 以数字序号开头
+        if re.match(r'^\d+[\.、\s\)]', text):
+            return True
         
-        for pattern in valid_starters:
-            if re.match(pattern, text):
-                return True
-                
-        # 如果长度足够长，也可能是题目（针对没有序号的情况）
-        if len(text) > 5:
+        # 策略2: 包含题型标记
+        if re.search(r'[\(\（\[\【][单多判填问简论].*?题[\)\）\]\】]', text):
+            return True
+        
+        # 策略3: 以括号序号开头
+        if re.match(r'^[\(\（]\d+[\)\）]', text):
+            return True
+        
+        # 策略4: 包含问号（很可能是题目）
+        if '?' in text or '？' in text:
+            return True
+        
+        # 策略5: 包含选项标记
+        if re.search(r'[ABCD][\.、\s]', text):
+            return True
+        
+        # 策略6: 长度足够（>10字符），且不是纯数字/符号
+        if len(text) > 10 and re.search(r'[\u4e00-\u9fff]', text):
+            return True
+        
+        # 策略7: 包含常见题目关键词
+        question_keywords = ['下列', '以下', '关于', '属于', '不属于', '正确', '错误', 
+                            '选择', '判断', '说法', '描述', '表述', '理解', '分析',
+                            '计算', '解答', '简述', '论述', '请', '试']
+        if any(kw in text for kw in question_keywords):
+            return True
+        
+        # 策略8: 最后的宽松判断 - 只要有中文内容且长度>5
+        if len(text) > 5 and re.search(r'[\u4e00-\u9fff]', text):
             return True
         
         return False
 
     def extract_question_text(self, container):
-        """提取题目文本"""
+        """提取题目文本 - 多策略增强版"""
         try:
             # 辅助函数：清洗题目文本
             def clean_text(raw_text):
+                if not raw_text:
+                    return ''
                 # 截断答案部分
                 separators = ['我的答案', '正确答案', '答案解析', 'Answer:', 'Correct Answer:', '我的答案：', '正确答案：']
                 for sep in separators:
@@ -275,62 +717,95 @@ class HomeworkQuestionParser:
                         raw_text = raw_text.split(sep)[0]
                 return raw_text.strip()
 
-            # 方法0: OCS策略 - 查找 h3 元素并处理
-            # 如果容器包含 questionLi 类，则专门处理 h3
-            is_question_li = 'questionLi' in container.get('class', [])
-            h3_title = container.find('h3')
-            
-            if is_question_li and h3_title:
-                import copy
-                # 复制一份在这个函数里操作，不影响原始DOM
-                title_clone = copy.copy(h3_title)
-                full_text = title_clone.get_text(strip=True)
-                
-                # 移除开头的题号 (数字加点或空格)
-                cleaned = re.sub(r'^\d+[\.、\s\)]+\s*', '', full_text)
-                # 移除题目类型标记 (如 [单选题], (单选题))
-                cleaned = re.sub(r'^[\[\(].*?题[\]\)]\s*', '', cleaned)
-                cleaned = clean_text(cleaned)
-                
-                if self.is_valid_question(cleaned) or len(cleaned) > 5:
-                    return cleaned
-
-            # 方法1: 查找 .mark_name 元素 (标准结构)
+            # ========== 策略1: .mark_name 元素（最常用） ==========
             mark_name = container.find(class_='mark_name')
             if mark_name:
                 text = mark_name.get_text(strip=True)
                 text = clean_text(text)
-                if self.is_valid_question(text):
+                if text and len(text) > 3:
                     return text
             
-            # 方法2: 查找 .TiMu 元素 (常见变体)
+            # ========== 策略2: h3 标题元素（OCS策略） ==========
+            h3_title = container.find('h3')
+            if h3_title:
+                full_text = h3_title.get_text(strip=True)
+                # 移除开头的题号和题型标记
+                cleaned = re.sub(r'^\d+[\.、\s\)]+\s*', '', full_text)
+                cleaned = re.sub(r'^[\[\(\（\【].*?题[\]\)\）\】]\s*', '', cleaned)
+                cleaned = clean_text(cleaned)
+                if cleaned and len(cleaned) > 3:
+                    return cleaned
+            
+            # ========== 策略3: .qtContent 元素 ==========
+            qt_content = container.find(class_='qtContent')
+            if qt_content:
+                text = qt_content.get_text(strip=True)
+                text = clean_text(text)
+                if text and len(text) > 3:
+                    return text
+            
+            # ========== 策略4: .Zy_TItle / .newZy_TItle 元素 ==========
+            for cls in ['Zy_TItle', 'newZy_TItle', 'Cy_TItle']:
+                zy_title = container.find(class_=cls)
+                if zy_title:
+                    text = zy_title.get_text(strip=True)
+                    text = clean_text(text)
+                    if text and len(text) > 3:
+                        return text
+            
+            # ========== 策略5: .TiMu 元素 ==========
             timu = container.find(class_='TiMu')
             if timu:
                 text = timu.get_text(strip=True)
                 text = clean_text(text)
-                if self.is_valid_question(text):
+                if text and len(text) > 3:
                     return text
-
-            # 方法3: 查找题目序号模式 (全文搜索)
+            
+            # ========== 策略6: .stem / .stem_question 元素 ==========
+            for cls in ['stem', 'stem_question', 'question-stem']:
+                stem = container.find(class_=cls)
+                if stem:
+                    text = stem.get_text(strip=True)
+                    text = clean_text(text)
+                    if text and len(text) > 3:
+                        return text
+            
+            # ========== 策略7: 从文本行中查找题目 ==========
             text_content = container.get_text()
-            # 尝试找到以数字开头的行，且不包含"分"字（或者是分值）
             lines = text_content.split('\n')
             for line in lines:
                 line = line.strip()
-                if not line: continue
+                if not line or len(line) < 5:
+                    continue
                 
-                # 如果这一行包含"我的答案"，截断它
                 cleaned_line = clean_text(line)
                 
-                if self.is_valid_question(cleaned_line):
+                # 跳过明显的非题目内容
+                if any(kw in cleaned_line for kw in ['我的答案', '正确答案', '得分', '分数']):
+                    continue
+                
+                # 检查是否以题号开头
+                if re.match(r'^\d+[\.、\s\)]', cleaned_line):
+                    return cleaned_line
+                
+                # 检查是否包含题型标记
+                if re.search(r'[\(\（\[\【][单多判填问简].*?题[\)\）\]\】]', cleaned_line):
                     return cleaned_line
             
-            # 方法4: 正则匹配题目及序号
-            # 匹配 "1. (单选题) 题目内容" 或 "1. 题目内容"
-            match = re.search(r'(\d+[\.、\s].*?)(?=我的答案|正确答案|A[\.、]|B[\.、]|$)', text_content, re.DOTALL)
+            # ========== 策略8: 正则匹配整段题目 ==========
+            match = re.search(r'(\d+[\.、\s].*?)(?=我的答案|正确答案|A[\.、\s]|B[\.、\s]|$)', text_content, re.DOTALL)
             if match:
                 text = match.group(1).strip()
-                if self.is_valid_question(text):
+                text = clean_text(text)
+                if text and len(text) > 5:
+                    return text
+            
+            # ========== 策略9: 最后尝试 - 取容器前200字符 ==========
+            full_text = container.get_text(strip=True)
+            if full_text:
+                # 截取前200字符作为题目
+                text = clean_text(full_text[:200])
+                if text and len(text) > 5:
                     return text
             
         except Exception as e:
@@ -444,86 +919,156 @@ class HomeworkQuestionParser:
         return correct_answer, my_answer, score, is_correct
 
     def extract_options_with_images(self, container):
-        """提取题目选项，包含选项中的图片"""
+        """
+        提取题目选项 - 史诗级增强版
+        整合所有脚本的选项提取策略，支持纯图片选项、混排选项
+        """
         options = []
         try:
-            # OCS Selectors: .answerBg .answer_p, .textDIV, .eidtDiv, .radio-view li.clearfix, .checklist-view label
-            ocs_options = container.select(".answerBg .answer_p, .textDIV, .eidtDiv, .radio-view li.clearfix, .checklist-view label")
-            if ocs_options:
-                for idx, opt_elem in enumerate(ocs_options):
-                    # 尝试寻找选项标签 A, B, C...
-                    label = chr(65 + idx) # 默认 A, B, C...
-                    
-                    # 尝试从文本中提取真实标签 (e.g. "A. Option Text")
-                    text = opt_elem.get_text(strip=True)
-                    match = re.match(r'^([A-Z])[\.、]', text)
-                    if match:
-                        label = match.group(1)
-                        content = text[len(match.group(0)):].strip()
-                    else:
-                        content = text
-                    
-                    # 提取图片
-                    imgs = self.extract_images_from_element(opt_elem)
-                    
-                    options.append({
-                        'label': label,
-                        'content': content,
-                        'images': imgs
-                    })
-                return options
-
-            text_content = container.get_text()
-
-            # 先移除答案部分，避免干扰选项提取
-            clean_text = re.sub(r'我的答案[：:].*?(?=\n|$)', '', text_content, flags=re.MULTILINE)
-            clean_text = re.sub(r'正确答案[：:].*?(?=\n|$)', '', clean_text, flags=re.MULTILINE)
-            clean_text = re.sub(r'答案[：:].*?(?=\n|$)', '', clean_text, flags=re.MULTILINE)
-
-            # 查找ABCD选项
-            option_pattern = re.compile(r'([ABCD])[\.、]\s*([^ABCD\n]+?)(?=\s*[ABCD][\.、]|\n\n|$)', re.DOTALL)
-            matches = option_pattern.findall(clean_text)
-
-            for label, content in matches:
-                # 清理选项内容
-                content = content.strip()
-                content = re.sub(r'\n+.*?答案.*', '', content, flags=re.DOTALL)
-                content = re.sub(r'\d+分$', '', content).strip()
-
-                if content and len(content) > 1:
-                    # 查找该选项对应的HTML元素，提取其中的图片
-                    option_images = []
-                    option_elements = container.find_all(string=re.compile(re.escape(label + '.')))
-                    for elem in option_elements:
-                        parent = elem.parent
-                        if parent:
-                            option_images = self.extract_images_from_element(parent)
-                            break
-
-                    options.append({
-                        'label': label,
-                        'content': content,
-                        'images': option_images
-                    })
-
-            # 如果没有找到ABCD选项，尝试查找判断题选项
+            # ========== 策略1: 使用配置的选择器链式查找 ==========
+            for selector in CHAOXING_SELECTORS['options']:
+                try:
+                    opt_elements = container.select(selector)
+                    if opt_elements and len(opt_elements) > 0:
+                        app_logger.debug(f"选项策略命中: {selector}, 找到 {len(opt_elements)} 个选项")
+                        
+                        for idx, opt_elem in enumerate(opt_elements):
+                            # 使用智能选项解析
+                            parsed = self.parse_option_content(opt_elem)
+                            if parsed:
+                                # 如果没有标签，使用默认顺序
+                                if not parsed['label']:
+                                    parsed['label'] = chr(65 + idx)  # A, B, C...
+                                
+                                options.append({
+                                    'label': parsed['label'],
+                                    'content': parsed['content'],
+                                    'images': parsed['images'],
+                                    'is_image_only': parsed.get('is_image_only', False),
+                                    'mixed_content': parsed.get('mixed_content')
+                                })
+                        
+                        if options:
+                            return options
+                except Exception:
+                    continue
+            
+            # ========== 策略2: 查找带有选项标签的li/div元素 ==========
             if not options:
-                judge_pattern = re.compile(r'([√×✓✗对错是否])[\.、]?\s*([^√×✓✗对错是否\n]*)', re.DOTALL)
-                matches = judge_pattern.findall(clean_text)
+                # 查找所有可能包含选项的元素
+                possible_options = container.find_all(['li', 'div', 'p', 'label'], 
+                    string=re.compile(r'^[A-Z][\.、\s：:]'))
+                
+                for opt_elem in possible_options:
+                    parsed = self.parse_option_content(opt_elem)
+                    if parsed and parsed['content']:
+                        options.append({
+                            'label': parsed['label'] or chr(65 + len(options)),
+                            'content': parsed['content'],
+                            'images': parsed['images'],
+                            'is_image_only': parsed.get('is_image_only', False),
+                            'mixed_content': parsed.get('mixed_content')
+                        })
+            
+            # ========== 策略3: 正则表达式从文本提取 ==========
+            if not options:
+                text_content = container.get_text()
+                
+                # 清理干扰文本
+                clean_text = re.sub(r'我的答案[：:].*?(?=\n|$)', '', text_content, flags=re.MULTILINE)
+                clean_text = re.sub(r'正确答案[：:].*?(?=\n|$)', '', clean_text, flags=re.MULTILINE)
+                clean_text = re.sub(r'答案解析[：:].*', '', clean_text, flags=re.DOTALL)
+                
+                # 匹配 A. B. C. D. 选项
+                option_pattern = re.compile(
+                    r'([A-Z])[\.、：:]\s*(.+?)(?=(?:\s*[A-Z][\.、：:])|(?:\n\s*[A-Z][\.、：:])|$)', 
+                    re.DOTALL
+                )
+                matches = option_pattern.findall(clean_text)
+                
                 for label, content in matches:
                     content = content.strip()
-                    if not content:
-                        content = label
-
-                    options.append({
-                        'label': label,
-                        'content': content,
-                        'images': []
-                    })
+                    # 清理内容
+                    content = re.sub(r'\n+.*?答案.*', '', content, flags=re.DOTALL)
+                    content = re.sub(r'\d+分$', '', content).strip()
+                    content = re.sub(r'\s+', ' ', content)  # 合并空白
+                    
+                    if content and len(content) >= 1:
+                        # 尝试查找对应的HTML元素获取图片
+                        option_images = []
+                        label_patterns = [f'{label}.', f'{label}、', f'{label}：', f'{label}:']
+                        for pattern in label_patterns:
+                            opt_elems = container.find_all(string=re.compile(re.escape(pattern)))
+                            for elem in opt_elems:
+                                parent = elem.parent
+                                if parent:
+                                    option_images = self.extract_images_from_element(parent)
+                                    if option_images:
+                                        break
+                            if option_images:
+                                break
+                        
+                        options.append({
+                            'label': label,
+                            'content': content,
+                            'images': option_images,
+                            'is_image_only': False,
+                            'mixed_content': None
+                        })
+            
+            # ========== 策略4: 判断题选项（仅当确定是判断题时） ==========
+            if not options:
+                # 必须先确认是判断题类型，才添加判断选项
+                q_type = self.determine_question_type_ocs(container)
+                is_judge_question = '判断' in q_type
+                
+                # 额外检测：查找明确的判断题UI元素
+                has_judge_inputs = container.select('input[type="radio"]')
+                if has_judge_inputs and len(has_judge_inputs) == 2:
+                    is_judge_question = True
+                
+                if is_judge_question:
+                    # 标准判断题选项
+                    options = [
+                        {'label': 'A', 'content': '正确', 'images': [], 'is_image_only': False, 'mixed_content': None},
+                        {'label': 'B', 'content': '错误', 'images': [], 'is_image_only': False, 'mixed_content': None}
+                    ]
+            
+            # ========== 策略5: 查找包含input[type=radio/checkbox]的父元素 ==========
+            if not options:
+                inputs = container.select('input[type="radio"], input[type="checkbox"]')
+                seen_labels = set()
+                
+                for inp in inputs:
+                    # 向上查找包含选项文本的父元素
+                    parent = inp.parent
+                    for _ in range(3):
+                        if parent is None:
+                            break
+                        text = parent.get_text(strip=True)
+                        if text and len(text) > 1:
+                            # 尝试提取标签
+                            label_match = re.match(r'^([A-Z])[\.、\s：:]', text)
+                            if label_match:
+                                label = label_match.group(1)
+                                if label not in seen_labels:
+                                    seen_labels.add(label)
+                                    content = text[len(label_match.group(0)):].strip()
+                                    options.append({
+                                        'label': label,
+                                        'content': content,
+                                        'images': self.extract_images_from_element(parent),
+                                        'is_image_only': False,
+                                        'mixed_content': None
+                                    })
+                            break
+                        parent = parent.parent
 
         except Exception as e:
             app_logger.error(f"提取选项失败: {e}")
 
+        # 按标签排序
+        options.sort(key=lambda x: x.get('label', 'Z'))
         return options
 
     def extract_explanation_with_images(self, container):
@@ -551,8 +1096,8 @@ class HomeworkQuestionParser:
 
     def extract_question_info(self, container, question_num, homework_title):
         """
-        提取单个题目的完整信息
-        完全按照 超星学习通作业题目提取工具（支持图片）.js 的逻辑重写
+        提取单个题目的完整信息 - 史诗级增强版
+        整合所有脚本的优秀技术：混排解析、智能选项、相似度匹配
         """
         try:
             question_info = {
@@ -576,168 +1121,171 @@ class HomeworkQuestionParser:
                 'explanation': '',
                 'analysis': '',
                 'explanation_images': [],
-                'analysisImages': []
+                'analysisImages': [],
+                # 新增：混排内容
+                'mixed_content': None,
+                'raw_html': str(container)[:500]  # 保存原始HTML片段用于调试
             }
             
-            # ========== 1. 解析题目编号和类型 ==========
-            # JS: const titleElement = container.querySelector('.mark_name');
-            title_element = container.find(class_='mark_name')
-            if title_element:
-                title_text = title_element.get_text(strip=True)
-                
-                # 提取题目类型: const typeMatch = titleText.match(/\((.*?题)\)/);
-                type_match = re.search(r'[\(\（](.*?题)[\)\）]', title_text)
-                if type_match:
-                    question_info['question_type'] = type_match.group(1)
-                    question_info['type'] = type_match.group(1)
-                else:
-                    # 备用：从 .colorShallow 提取
-                    color_shallow = container.find('span', class_='colorShallow')
-                    if color_shallow:
-                        type_text = color_shallow.get_text(strip=True)
-                        type_text = re.sub(r'[\(\)\（\）\[\]]', '', type_text).strip()
-                        if type_text:
-                            question_info['question_type'] = type_text
-                            question_info['type'] = type_text
-                
-                # 提取题目编号: const numberMatch = titleText.match(/^(\d+)\./);
-                number_match = re.match(r'^(\d+)[\.\、]', title_text)
-                if number_match:
-                    question_info['question_number'] = number_match.group(1)
+            # ========== 1. 使用OCS增强版题型识别 ==========
+            question_info['question_type'] = self.determine_question_type_ocs(container)
+            question_info['type'] = question_info['question_type']
             
-            # ========== 2. 解析题目内容和图片 ==========
-            # JS: const contentElement = container.querySelector('.qtContent');
-            content_element = container.find(class_='qtContent')
+            # ========== 2. 多策略提取题目内容 ==========
+            # 尝试多个选择器
+            content_element = None
+            for selector in CHAOXING_SELECTORS['question_title']:
+                content_element = container.select_one(selector)
+                if content_element:
+                    break
+            
             if content_element:
-                # getTextContent: 克隆元素，将图片替换为占位符
-                question_info['content'] = self._get_text_content(content_element)
-                question_info['title'] = question_info['content']
-                
-                # extractImages: 提取图片
+                # 使用混排内容解析
+                mixed = self.parse_mixed_content(content_element)
+                question_info['content'] = mixed['text']
+                question_info['title'] = mixed['text']
+                question_info['mixed_content'] = mixed
                 question_info['contentImages'] = self.extract_images_from_element(content_element)
                 question_info['title_images'] = question_info['contentImages']
             else:
-                # 备用：从 .mark_name 提取（移除题号和题型）
-                if title_element:
-                    raw_text = title_element.get_text(strip=True)
-                    # 移除开头的题号
-                    raw_text = re.sub(r'^\d+[\.\、]\s*', '', raw_text)
-                    # 移除题型标记
-                    raw_text = re.sub(r'[\(\（].*?题[\)\）]\s*', '', raw_text)
-                    question_info['content'] = self._clean_text(raw_text)
-                    question_info['title'] = question_info['content']
+                # 降级：使用 extract_question_text
+                question_info['content'] = self.extract_question_text(container)
+                question_info['title'] = question_info['content']
+                question_info['title_images'] = self.extract_images_from_element(container)
+                question_info['contentImages'] = question_info['title_images']
             
-            # ========== 3. 解析选项和选项图片 ==========
-            # JS: const optionElements = container.querySelectorAll('.mark_letter li, .qtDetail li');
-            option_elements = container.select('.mark_letter li, .qtDetail li')
+            # 清理题目内容（移除题号和题型标记）
+            if question_info['content']:
+                content = question_info['content']
+                content = re.sub(r'^\d+[\.\、\s\)]+', '', content)
+                content = re.sub(r'^[\[\(\（\【].*?题[\]\)\）\】]\s*', '', content)
+                question_info['content'] = content.strip()
+                question_info['title'] = question_info['content']
             
-            for opt_idx, option_elem in enumerate(option_elements):
-                opt_text = self._get_text_content(option_elem)
-                if opt_text:
-                    # 尝试提取选项标签 (A, B, C...)
-                    label_match = re.match(r'^([A-Z])[\.\、\s]', opt_text)
-                    if label_match:
-                        label = label_match.group(1)
-                        content = opt_text[len(label_match.group(0)):].strip()
-                    else:
-                        label = chr(65 + opt_idx)  # 默认 A, B, C...
-                        content = opt_text
-                    
-                    question_info['options'].append({
-                        'label': label,
-                        'content': content,
-                        'images': self.extract_images_from_element(option_elem)
-                    })
+            # ========== 3. 使用增强版选项提取 ==========
+            question_info['options'] = self.extract_options_with_images(container)
             
-            # ========== 4. 解析我的答案（包括文字和图片） ==========
-            # JS: const myAnswerElements = container.querySelectorAll('.stuAnswerContent');
-            my_answer_elements = container.select('.stuAnswerContent')
+            # 收集所有选项图片
+            all_option_images = []
+            for opt in question_info['options']:
+                all_option_images.extend(opt.get('images', []))
+            question_info['optionImages'] = all_option_images
+            
+            # ========== 4. 多策略提取我的答案 ==========
             my_answers = []
             my_answer_images = []
-            for elem in my_answer_elements:
-                # 提取文字
-                answer_text = self._clean_text(elem.get_text())
-                if answer_text:
-                    my_answers.append(answer_text)
-                # 提取图片
-                imgs = self.extract_images_from_element(elem)
-                my_answer_images.extend(imgs)
+            
+            for selector in CHAOXING_SELECTORS['my_answer']:
+                elems = container.select(selector)
+                for elem in elems:
+                    # 使用混排解析
+                    mixed = self.parse_mixed_content(elem)
+                    if mixed['text']:
+                        my_answers.append(mixed['text'])
+                    # 提取图片
+                    imgs = self.extract_images_from_element(elem)
+                    my_answer_images.extend(imgs)
+                if my_answers:
+                    break
             
             question_info['my_answer'] = '; '.join(my_answers) if my_answers else ''
             question_info['myAnswer'] = question_info['my_answer']
             question_info['my_answer_images'] = my_answer_images
             question_info['myAnswerImages'] = my_answer_images
             
-            # 如果没有文字答案但有图片，标注
             if not question_info['my_answer'] and my_answer_images:
                 question_info['my_answer'] = f'[包含 {len(my_answer_images)} 张图片]'
                 question_info['myAnswer'] = question_info['my_answer']
             
-            # ========== 5. 解析正确答案（包括文字和图片） ==========
-            # JS: const correctAnswerElements = container.querySelectorAll('.rightAnswerContent');
-            correct_answer_elements = container.select('.rightAnswerContent')
+            # ========== 5. 多策略提取正确答案 ==========
             correct_answers = []
             correct_answer_images = []
-            for elem in correct_answer_elements:
-                # 提取文字
-                answer_text = self._clean_text(elem.get_text())
-                if answer_text:
-                    correct_answers.append(answer_text)
-                # 提取图片
-                imgs = self.extract_images_from_element(elem)
-                correct_answer_images.extend(imgs)
+            
+            for selector in CHAOXING_SELECTORS['correct_answer']:
+                elems = container.select(selector)
+                for elem in elems:
+                    mixed = self.parse_mixed_content(elem)
+                    if mixed['text']:
+                        correct_answers.append(mixed['text'])
+                    imgs = self.extract_images_from_element(elem)
+                    correct_answer_images.extend(imgs)
+                if correct_answers:
+                    break
             
             question_info['correct_answer'] = '; '.join(correct_answers) if correct_answers else ''
             question_info['answer'] = question_info['correct_answer']
             question_info['correct_answer_images'] = correct_answer_images
             question_info['answerImages'] = correct_answer_images
             
-            # ========== 6. 解析答案解析 ==========
-            # JS: const analysisElement = container.querySelector('.qtAnalysis');
-            analysis_element = container.find(class_='qtAnalysis')
-            if analysis_element:
-                question_info['analysis'] = self._get_text_content(analysis_element)
-                question_info['explanation'] = question_info['analysis']
-                question_info['analysisImages'] = self.extract_images_from_element(analysis_element)
-                question_info['explanation_images'] = question_info['analysisImages']
+            # ========== 6. 多策略提取解析 ==========
+            for selector in CHAOXING_SELECTORS['explanation']:
+                analysis_elem = container.select_one(selector)
+                if analysis_elem:
+                    mixed = self.parse_mixed_content(analysis_elem)
+                    question_info['analysis'] = mixed['text']
+                    question_info['explanation'] = mixed['text']
+                    question_info['analysisImages'] = self.extract_images_from_element(analysis_elem)
+                    question_info['explanation_images'] = question_info['analysisImages']
+                    break
             
-            # ========== 7. 解析得分 ==========
-            # JS: const scoreElement = container.querySelector('.totalScore i');
-            score_element = container.select_one('.totalScore i')
-            if score_element:
-                question_info['score'] = score_element.get_text(strip=True)
-            else:
-                # 备用：从 .mark_score 提取
-                mark_score = container.find(class_='mark_score')
-                if mark_score:
-                    score_i = mark_score.find('i')
-                    if score_i:
-                        question_info['score'] = score_i.get_text(strip=True)
+            # ========== 7. 多策略提取得分 ==========
+            for selector in CHAOXING_SELECTORS['score']:
+                score_elem = container.select_one(selector)
+                if score_elem:
+                    question_info['score'] = score_elem.get_text(strip=True)
+                    break
             
-            # ========== 8. 判断是否正确 ==========
-            # JS: const correctIcon = container.querySelector('.marking_dui');
-            # JS: question.isCorrect = !!correctIcon;
-            correct_icon = container.find(class_='marking_dui')
-            if correct_icon:
-                question_info['is_correct'] = True
-                question_info['isCorrect'] = True
-            else:
-                wrong_icon = container.find(class_='marking_cuo')
-                if wrong_icon:
-                    question_info['is_correct'] = False
-                    question_info['isCorrect'] = False
+            # ========== 8. 多策略判断正确性 ==========
+            is_correct = None
+            
+            # 方法1: 查找正确标记
+            for selector in CHAOXING_SELECTORS['correct_mark']:
+                if container.select_one(selector):
+                    is_correct = True
+                    break
+            
+            # 方法2: 查找错误标记
+            if is_correct is None:
+                for selector in CHAOXING_SELECTORS['wrong_mark']:
+                    if container.select_one(selector):
+                        is_correct = False
+                        break
+            
+            # 方法3: 通过答案比较
+            if is_correct is None and question_info['correct_answer'] and question_info['my_answer']:
+                # 使用相似度匹配进行智能比较
+                correct = question_info['correct_answer'].upper().replace(' ', '').replace(';', '').replace('、', '')
+                my = question_info['my_answer'].upper().replace(' ', '').replace(';', '').replace('、', '')
+                
+                # 对于选择题答案 (A, B, AB, ABC等)
+                if re.match(r'^[A-Z]+$', correct) and re.match(r'^[A-Z]+$', my):
+                    is_correct = set(correct) == set(my)
                 else:
-                    # 如果没有图标，尝试通过比较答案判断
-                    if question_info['correct_answer'] and question_info['my_answer']:
-                        # 对于选择题，规范化答案比较
-                        correct = question_info['correct_answer'].upper().replace(' ', '').replace(';', '')
-                        my = question_info['my_answer'].upper().replace(' ', '').replace(';', '')
-                        question_info['is_correct'] = correct == my
-                        question_info['isCorrect'] = question_info['is_correct']
+                    # 使用相似度匹配
+                    similarity = self.calculate_similarity(correct, my)
+                    is_correct = similarity > 0.8
             
-            # 验证是否提取到有效内容
+            question_info['is_correct'] = is_correct
+            question_info['isCorrect'] = is_correct
+            
+            # ========== 9. 智能答案匹配（如果答案是文本而非选项标签） ==========
+            if question_info['correct_answer'] and question_info['options']:
+                answer = question_info['correct_answer']
+                # 如果答案不是标准选项格式，尝试匹配
+                if not re.match(r'^[A-Z]+$', answer.upper().replace(' ', '')):
+                    matched = self.match_answer_with_options(answer, question_info['options'])
+                    if matched:
+                        question_info['matched_answer'] = matched
+            
+            # ========== 10. 验证和返回 ==========
             if not question_info['content'] and not question_info['title']:
-                return None
+                # 最后尝试：从容器获取任何文本
+                fallback_text = container.get_text(strip=True)[:200]
+                if fallback_text and len(fallback_text) > 10:
+                    question_info['content'] = fallback_text
+                    question_info['title'] = fallback_text
+                else:
+                    return None
             
             return question_info
             
@@ -799,25 +1347,74 @@ class HomeworkQuestionParser:
             # 查找题目容器 - 改进识别逻辑
             question_containers = []
 
-            # 方法1: OCS策略 - 查找 .questionLi
-            ocs_containers = soup.find_all(class_='questionLi')
-            if ocs_containers:
-                question_containers.extend(ocs_containers)
-
-            # 方法2: 查找包含 .mark_name 的直接父容器
+            # ========== 史诗级题目容器识别（使用配置选择器） ==========
+            app_logger.info("开始识别题目容器...")
+            
+            # 使用配置的选择器链式查找
+            for idx, selector in enumerate(CHAOXING_SELECTORS['question_containers'], 1):
+                try:
+                    elements = soup.select(selector)
+                    if elements:
+                        # 过滤：确保容器包含有效内容
+                        valid_elements = []
+                        for elem in elements:
+                            # 检查是否包含题目相关元素
+                            has_content = any([
+                                elem.select_one(s) for s in CHAOXING_SELECTORS['question_title']
+                            ]) or elem.get_text(strip=True)
+                            
+                            if has_content:
+                                valid_elements.append(elem)
+                        
+                        if valid_elements:
+                            question_containers.extend(valid_elements)
+                            app_logger.info(f"策略{idx}: 选择器 '{selector}' 命中 {len(valid_elements)} 个有效容器")
+                            break
+                except Exception as e:
+                    app_logger.debug(f"选择器 '{selector}' 执行失败: {e}")
+                    continue
+            
+            # 补充策略: div[data] 带题目ID的元素
             if not question_containers:
-                mark_names = soup.find_all(class_='mark_name')
-                for mark_name in mark_names:
-                    # 找到包含完整题目信息的父容器
-                    parent = mark_name.parent
-                    while parent and not parent.find(class_='mark_answer'):
-                         parent = parent.parent
-                    if parent and parent not in question_containers:
-                        question_containers.append(parent)
-
-            # 如果没有找到，使用备用方法
+                data_divs = soup.find_all('div', attrs={'data': True})
+                for div in data_divs:
+                    # 检查是否包含题目内容选择器
+                    has_title = any(div.select_one(s) for s in CHAOXING_SELECTORS['question_title'])
+                    if has_title:
+                        question_containers.append(div)
+                if question_containers:
+                    app_logger.info(f"补充策略: 发现 {len(question_containers)} 个带data属性的题目元素")
+            
+            # 补充策略: 查找包含 .mark_name 的父容器
             if not question_containers:
-                question_containers = soup.find_all('div', class_=lambda x: x and ('question' in x.lower() or 'topic' in x.lower()))
+                for title_selector in CHAOXING_SELECTORS['question_title']:
+                    title_elements = soup.select(title_selector)
+                    for title_elem in title_elements:
+                        parent = title_elem.parent
+                        for _ in range(6):  # 最多向上6层
+                            if parent is None or parent.name == 'body':
+                                break
+                            # 检查是否包含答案元素
+                            has_answer = any(
+                                parent.select_one(s) for s in 
+                                CHAOXING_SELECTORS['my_answer'] + CHAOXING_SELECTORS['correct_answer']
+                            )
+                            if has_answer and parent not in question_containers:
+                                question_containers.append(parent)
+                                break
+                            parent = parent.parent
+                    if question_containers:
+                        app_logger.info(f"补充策略: 通过 '{title_selector}' 父容器发现 {len(question_containers)} 个题目")
+                        break
+            
+            # 最终备用: 通用关键词匹配
+            if not question_containers:
+                generic_containers = soup.find_all('div', class_=lambda x: x and any(
+                    kw in x.lower() for kw in ['question', 'topic', 'item', 'ques', 'timu', 'stem']
+                ))
+                if generic_containers:
+                    question_containers.extend(generic_containers)
+                    app_logger.info(f"备用策略: 通用关键词匹配发现 {len(generic_containers)} 个可能的容器")
 
             app_logger.info(f"找到 {len(question_containers)} 个题目容器")
             
