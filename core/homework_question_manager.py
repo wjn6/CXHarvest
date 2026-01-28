@@ -643,18 +643,33 @@ class HomeworkQuestionManager:
             # ========== 多策略题目容器识别（参考v1.31chaoxing.js） ==========
             question_containers = []
             
-            # 策略1: .mark_item - 最常用的题目容器（优先级最高）
-            mark_items = soup.find_all(class_='mark_item')
-            if mark_items:
-                question_containers.extend(mark_items)
-                app_logger.info(f"策略1: 发现 {len(mark_items)} 个 mark_item 元素")
+            # 策略1: .questionLi - 单个题目容器（最精确，优先级最高）
+            # 注意：.mark_item 是题型分组容器，可能包含多个 .questionLi
+            question_li = soup.find_all(class_='questionLi')
+            if question_li:
+                question_containers.extend(question_li)
+                app_logger.info(f"策略1: 选择器 '.questionLi' 命中 {len(question_li)} 个有效容器")
             
-            # 策略2: .questionLi - OCS标准容器
+            # 策略2: .mark_item - 如果没有 .questionLi，再尝试 .mark_item
+            # 但要检查 .mark_item 内部是否有子题目容器
             if not question_containers:
-                question_li = soup.find_all(class_='questionLi')
-                if question_li:
-                    question_containers.extend(question_li)
-                    app_logger.info(f"策略2: 发现 {len(question_li)} 个 questionLi 元素")
+                mark_items = soup.find_all(class_='mark_item')
+                if mark_items:
+                    # 检查 mark_item 内部是否有 questionLi（题型分组情况）
+                    inner_questions = []
+                    for mark_item in mark_items:
+                        inner_li = mark_item.find_all(class_='questionLi')
+                        if inner_li:
+                            inner_questions.extend(inner_li)
+                    
+                    if inner_questions:
+                        # mark_item 是分组容器，使用内部的 questionLi
+                        question_containers.extend(inner_questions)
+                        app_logger.info(f"策略2: '.mark_item' 内发现 {len(inner_questions)} 个 '.questionLi' 题目")
+                    else:
+                        # mark_item 本身就是题目容器
+                        question_containers.extend(mark_items)
+                        app_logger.info(f"策略2: 选择器 '.mark_item' 命中 {len(mark_items)} 个有效容器")
             
             # 策略3: .TiMu - 另一种常见容器
             if not question_containers:

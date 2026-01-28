@@ -6,10 +6,10 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
-    QFrame, QSizePolicy, QSpacerItem
+    QFrame, QSizePolicy, QSpacerItem, QLabel
 )
 from PySide6.QtCore import Qt, Signal, QThread
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QPixmap, QCursor
 
 from qfluentwidgets import (
     CardWidget, SimpleCardWidget, ElevatedCardWidget,
@@ -24,6 +24,7 @@ from qfluentwidgets import FluentIcon as FIF
 from core.enterprise_logger import app_logger
 from core.homework_question_parser import HomeworkQuestionParser
 from ui.export_dialog import show_export_dialog
+from ui.image_preview import ImagePreviewDialog, ClickableImageLabel
 
 
 class QuestionParseWorker(QThread):
@@ -69,7 +70,7 @@ class QuestionCard(CardWidget):
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
         
-        # 顶部：序号 + 类型 + 选择框
+        # 顶部：序号 + 类型 + 得分 + 选择框
         top_layout = QHBoxLayout()
         
         # 序号和类型组合
@@ -77,6 +78,20 @@ class QuestionCard(CardWidget):
         self.index_label = CaptionLabel(f"第 {self.index + 1} 题 · {q_type}", self)
         self.index_label.setStyleSheet("color: #666666;")
         top_layout.addWidget(self.index_label)
+        
+        # 得分显示
+        score = self.question_data.get('score', '') or self.question_data.get('得分', '')
+        total_score = self.question_data.get('totalScore', '') or self.question_data.get('满分', '')
+        if score or total_score:
+            score_text = f"{score}" if score else ""
+            if total_score:
+                score_text = f"{score}/{total_score}分" if score else f"满分{total_score}分"
+            elif score:
+                score_text = f"{score}分"
+            if score_text:
+                score_label = CaptionLabel(score_text, self)
+                score_label.setStyleSheet("color: #e67e22; font-weight: 500;")
+                top_layout.addWidget(score_label)
         
         # 正确/错误标记 - 仅对客观题显示
         is_correct = self.question_data.get('isCorrect', None)
@@ -102,11 +117,17 @@ class QuestionCard(CardWidget):
         
         layout.addLayout(top_layout)
         
-        # 题目内容
+        # 题目内容（保留换行）
         content = self.question_data.get('content', '')
-        self.content_label = BodyLabel(content, self)
+        self.content_label = BodyLabel(self)
         self.content_label.setWordWrap(True)
         self.content_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # 将换行符转换为HTML换行以正确显示
+        if '\n' in content:
+            html_content = content.replace('\n', '<br>')
+            self.content_label.setText(html_content)
+        else:
+            self.content_label.setText(content)
         layout.addWidget(self.content_label)
         
         # 题目中的图片
@@ -160,18 +181,28 @@ class QuestionCard(CardWidget):
         my_answer = self.question_data.get('myAnswer', '') or self.question_data.get('my_answer', '')
         my_answer_images = self.question_data.get('myAnswerImages', []) or self.question_data.get('my_answer_images', [])
         
+        # 清理答案文本中的图片占位符
+        clean_my_answer = my_answer
+        if clean_my_answer:
+            import re
+            clean_my_answer = re.sub(r'\[图片[^\]]*\]\s*', '', clean_my_answer).strip()
+        
         my_answer_container = QVBoxLayout()
         my_answer_header = QHBoxLayout()
         my_answer_title = CaptionLabel("我的答案:", self)
         my_answer_title.setStyleSheet("color: #2980b9;")
         my_answer_header.addWidget(my_answer_title)
         
-        if my_answer:
-            display_answer = my_answer[:200] + '...' if len(my_answer) > 200 else my_answer
+        # 有文本答案时显示文本，否则根据是否有图片决定显示内容
+        if clean_my_answer:
+            display_answer = clean_my_answer[:200] + '...' if len(clean_my_answer) > 200 else clean_my_answer
             my_answer_text = BodyLabel(display_answer, self)
             my_answer_text.setWordWrap(True)
             my_answer_text.setStyleSheet("color: #333;")
             my_answer_header.addWidget(my_answer_text, 1)
+        elif my_answer_images:
+            # 只有图片，不显示文本
+            my_answer_header.addStretch(1)
         else:
             my_answer_text = BodyLabel("(未作答)", self)
             my_answer_text.setStyleSheet("color: #aaa;")
@@ -246,9 +277,8 @@ class QuestionCard(CardWidget):
         self.selection_changed.emit(self.is_selected)
     
     def _create_image_widget(self, img_info, max_size=150):
-        """创建图片控件"""
+        """创建可点击放大的图片控件"""
         try:
-            from PySide6.QtGui import QPixmap
             import base64
             
             if not img_info:
@@ -279,21 +309,24 @@ class QuestionCard(CardWidget):
             else:
                 return None
             
-            # 创建QPixmap
-            pixmap = QPixmap()
-            if not pixmap.loadFromData(image_data):
+            # 创建原始QPixmap（用于放大查看）
+            original_pixmap = QPixmap()
+            if not original_pixmap.loadFromData(image_data):
                 return None
             
-            # 缩放图片
-            if pixmap.width() > max_size or pixmap.height() > max_size:
-                pixmap = pixmap.scaled(max_size, max_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # 缩放图片用于缩略图显示
+            thumbnail_pixmap = original_pixmap
+            if original_pixmap.width() > max_size or original_pixmap.height() > max_size:
+                thumbnail_pixmap = original_pixmap.scaled(max_size, max_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
-            # 创建QLabel显示图片
-            from PySide6.QtWidgets import QLabel
-            img_label = QLabel(self)
-            img_label.setPixmap(pixmap)
+            # 创建可点击的图片标签
+            img_label = ClickableImageLabel(self)
+            img_label.setPixmap(thumbnail_pixmap)
             img_label.setStyleSheet("border: 1px solid #ddd; border-radius: 4px; padding: 2px;")
-            img_label.setToolTip(img_info.get('alt', '图片') if isinstance(img_info, dict) else '图片')
+            img_label.setToolTip("点击查看大图")
+            
+            # 点击放大
+            img_label.clicked.connect(lambda: self._show_image_preview(original_pixmap))
             
             return img_label
             
@@ -302,6 +335,11 @@ class QuestionCard(CardWidget):
             placeholder = CaptionLabel("[图片加载失败]", self)
             placeholder.setStyleSheet("color: #e74c3c;")
             return placeholder
+    
+    def _show_image_preview(self, pixmap: QPixmap):
+        """显示图片预览对话框"""
+        dialog = ImagePreviewDialog(pixmap, self.window())
+        dialog.exec()
     
     def set_selected(self, selected: bool):
         """设置选中状态"""

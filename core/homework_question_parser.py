@@ -46,14 +46,15 @@ OCS_QUESTION_TYPE_MAP = {
 # =====================================================================
 CHAOXING_SELECTORS = {
     # 题目容器选择器（按优先级排序）
+    # 注意：.questionLi 是单个题目容器，.mark_item 是题型分组容器
     'question_containers': [
-        '.mark_item',           # 最常用
-        '.questionLi',          # OCS标准
+        '.questionLi',          # 单个题目容器（最精确，优先）
         '.TiMu',                # 常见变体
         '.Py-mian1',            # 考试页面
         '.queBox',              # 问答框
         '.stem_question',       # 题干容器
         'div[data]',            # 带题目ID
+        '.mark_item',           # 题型分组容器（放最后）
     ],
     # 题目标题/内容选择器
     'question_title': [
@@ -185,6 +186,15 @@ class HomeworkQuestionParser:
                         items.append({'type': 'br'})
                         text_parts.append('\n')
                         html_parts.append('<br/>')
+                    elif child.name == 'p':
+                        # 段落标签，处理后添加换行
+                        sub_result = self.parse_mixed_content(child)
+                        items.extend(sub_result['items'])
+                        items.append({'type': 'br'})
+                        text_parts.append(sub_result['text'])
+                        text_parts.append('\n')
+                        html_parts.append(sub_result['html'])
+                        html_parts.append('<br/>')
                     else:
                         # 递归处理子元素
                         sub_result = self.parse_mixed_content(child)
@@ -200,8 +210,14 @@ class HomeworkQuestionParser:
                 'items': [{'type': 'text', 'content': element.get_text(strip=True)}]
             }
         
+        # 合并文本，保留换行符
+        combined_text = ''.join(text_parts)
+        # 清理多余换行但保留单个换行
+        combined_text = re.sub(r'\n{3,}', '\n\n', combined_text)
+        combined_text = combined_text.strip()
+        
         return {
-            'text': ' '.join(text_parts),
+            'text': combined_text,
             'html': ''.join(html_parts),
             'items': items
         }
@@ -736,10 +752,13 @@ class HomeworkQuestionParser:
                 if cleaned and len(cleaned) > 3:
                     return cleaned
             
-            # ========== 策略3: .qtContent 元素 ==========
+            # ========== 策略3: .qtContent 元素（保留换行） ==========
             qt_content = container.find(class_='qtContent')
             if qt_content:
-                text = qt_content.get_text(strip=True)
+                # 使用 separator='\n' 保留换行
+                text = qt_content.get_text(separator='\n').strip()
+                # 清理多余换行
+                text = re.sub(r'\n{3,}', '\n\n', text)
                 text = clean_text(text)
                 if text and len(text) > 3:
                     return text
@@ -1116,6 +1135,7 @@ class HomeworkQuestionParser:
                 'my_answer': '',
                 'myAnswer': '',
                 'score': '',
+                'totalScore': '',
                 'is_correct': None,
                 'isCorrect': None,
                 'explanation': '',
@@ -1228,12 +1248,49 @@ class HomeworkQuestionParser:
                     question_info['explanation_images'] = question_info['analysisImages']
                     break
             
-            # ========== 7. 多策略提取得分 ==========
+            # ========== 7. 多策略提取得分和满分（参考chaoxing_scrapper等脚本） ==========
+            text_content = container.get_text()
+            
+            # 提取得分（从DOM元素）
             for selector in CHAOXING_SELECTORS['score']:
                 score_elem = container.select_one(selector)
                 if score_elem:
-                    question_info['score'] = score_elem.get_text(strip=True)
+                    score_text = score_elem.get_text(strip=True)
+                    # 提取数字
+                    score_match = re.search(r'(\d+(?:\.\d+)?)', score_text)
+                    if score_match:
+                        question_info['score'] = score_match.group(1)
                     break
+            
+            # 从题目标题中同时提取题型和分数（参考chaoxing_scrapper）
+            # 格式: (单选题, 2分) / (单选题)[2分] / （单选题：2分） / [单选题,2分]
+            title_score_patterns = [
+                r'[\(（\[]([^)）\]]+?)[,，:：]\s*(\d+(?:\.\d+)?)\s*分[\)）\]]',  # (单选题, 2分)
+                r'[\(（]([^)）]+?)[\)）]\s*[\[\【](\d+(?:\.\d+)?)\s*分[\]\】]',  # (单选题)[2分]
+                r'[\[\【]([^\]】]+?)[,，:：]\s*(\d+(?:\.\d+)?)\s*分[\]\】]',     # [单选题,2分]
+            ]
+            for pattern in title_score_patterns:
+                match = re.search(pattern, text_content)
+                if match:
+                    if not question_info['totalScore']:
+                        question_info['totalScore'] = match.group(2)
+                    break
+            
+            # 提取满分（从文本中匹配更多格式）
+            if not question_info['totalScore']:
+                total_score_patterns = [
+                    r'[\(（](\d+(?:\.\d+)?)\s*分[\)）]',      # (10分) 或 （10分）
+                    r'[\[\【](\d+(?:\.\d+)?)\s*分[\]\】]',    # [10分] 或 【10分】
+                    r'满分[：:]\s*(\d+(?:\.\d+)?)',           # 满分:10
+                    r'本题\s*(\d+(?:\.\d+)?)\s*分',           # 本题10分
+                    r'共\s*(\d+(?:\.\d+)?)\s*分',             # 共10分
+                    r'(\d+(?:\.\d+)?)\s*分\s*[\)）\]\】]',    # 2分) 或 2分]
+                ]
+                for pattern in total_score_patterns:
+                    match = re.search(pattern, text_content)
+                    if match:
+                        question_info['totalScore'] = match.group(1)
+                        break
             
             # ========== 8. 多策略判断正确性 ==========
             is_correct = None
