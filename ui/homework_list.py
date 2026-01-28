@@ -23,6 +23,7 @@ from qfluentwidgets import FluentIcon as FIF
 
 from core.enterprise_logger import app_logger
 from core.homework_manager import HomeworkManager
+from core.homework_question_manager import HomeworkQuestionManager
 
 
 class HomeworkLoadWorker(QThread):
@@ -43,6 +44,42 @@ class HomeworkLoadWorker(QThread):
             self.homework_loaded.emit(homework_list)
         except Exception as e:
             self.error_occurred.emit(str(e))
+
+
+class BatchExportWorker(QThread):
+    """批量导出工作线程"""
+    progress = Signal(str, int)  # 消息, 百分比
+    questions_ready = Signal(list, list, str)  # 题目列表, 作业标题列表, 课程名称
+    error = Signal(str)
+    
+    def __init__(self, homework_list: list, login_manager, course_name: str):
+        super().__init__()
+        self.homework_list = homework_list
+        self.login_manager = login_manager
+        self.course_name = course_name
+    
+    def run(self):
+        try:
+            all_questions = []
+            homework_titles = []
+            total = len(self.homework_list)
+            
+            for i, homework in enumerate(self.homework_list):
+                title = homework.get('title', '未知作业')
+                self.progress.emit(f'正在解析: {title}', int((i / total) * 100))
+                
+                manager = HomeworkQuestionManager(self.login_manager)
+                questions = manager.get_questions(homework)
+                
+                if questions:
+                    all_questions.extend(questions)
+                    homework_titles.append(title)
+            
+            self.progress.emit('解析完成', 100)
+            self.questions_ready.emit(all_questions, homework_titles, self.course_name)
+            
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class HomeworkListFluent(QWidget):
@@ -250,12 +287,13 @@ class HomeworkListFluent(QWidget):
         empty_layout.setContentsMargins(0, 80, 0, 0)
         empty_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         
-        self.empty_label = BodyLabel("暂无作业数据，请先登录", self.empty_container)
+        self.empty_label = BodyLabel("请选择课程查看作业", self.empty_container)
         self.empty_label.setStyleSheet("color: #888888; font-size: 14px;")
         
         self.login_hint_btn = PrimaryPushButton("点击登录", self.empty_container)
         self.login_hint_btn.setFixedWidth(120)
         self.login_hint_btn.clicked.connect(lambda: self.login_required.emit())
+        self.login_hint_btn.hide()  # 默认隐藏
         
         empty_layout.addWidget(self.empty_label, alignment=Qt.AlignCenter)
         empty_layout.addSpacing(16)
@@ -281,11 +319,11 @@ class HomeworkListFluent(QWidget):
         
         footer_layout.addStretch()
         
-        # 批量解析
-        self.batch_parse_btn = PrimaryPushButton("解析选中作业", self)
-        self.batch_parse_btn.clicked.connect(self._on_batch_parse)
-        self.batch_parse_btn.setEnabled(False)
-        footer_layout.addWidget(self.batch_parse_btn)
+        # 批量导出
+        self.batch_export_btn = PrimaryPushButton("批量导出", self)
+        self.batch_export_btn.clicked.connect(self._on_batch_export)
+        self.batch_export_btn.setEnabled(False)
+        footer_layout.addWidget(self.batch_export_btn)
         
         parent_layout.addLayout(footer_layout)
     
@@ -450,7 +488,7 @@ class HomeworkListFluent(QWidget):
                 count += 1
         
         self.selected_label.setText(f"已选择 {count} 项")
-        self.batch_parse_btn.setEnabled(count > 0)
+        self.batch_export_btn.setEnabled(count > 0)
     
     def _on_select_all_changed(self, state):
         """全选状态改变"""
@@ -472,8 +510,8 @@ class HomeworkListFluent(QWidget):
         """查看按钮点击"""
         self.homework_selected.emit(homework)
     
-    def _on_batch_parse(self):
-        """批量解析"""
+    def _on_batch_export(self):
+        """批量导出"""
         selected = []
         for row in range(self.table.rowCount()):
             cb = self.table.cellWidget(row, 0)
@@ -484,17 +522,61 @@ class HomeworkListFluent(QWidget):
                     if homework:
                         selected.append(homework)
         
-        if selected:
-            # TODO: 实现批量解析逻辑
-            InfoBar.info(
-                title="批量解析",
-                content=f"已选择 {len(selected)} 个作业进行解析",
+        if not selected:
+            return
+        
+        # 显示加载状态
+        self._set_loading(True)
+        self.loading_label.setText(f"正在解析 {len(selected)} 个作业...")
+        
+        # 启动批量解析线程
+        course_name = self.current_course.get('name', '') if self.current_course else ''
+        self.batch_worker = BatchExportWorker(selected, self.login_manager, course_name)
+        self.batch_worker.progress.connect(self._on_batch_progress)
+        self.batch_worker.questions_ready.connect(self._on_batch_questions_ready)
+        self.batch_worker.error.connect(self._on_batch_error)
+        self.batch_worker.start()
+    
+    def _on_batch_progress(self, message: str, percentage: int):
+        """批量解析进度"""
+        self.loading_label.setText(message)
+    
+    def _on_batch_questions_ready(self, questions: list, homework_titles: list, course_name: str):
+        """批量解析完成"""
+        self._set_loading(False)
+        
+        if not questions:
+            InfoBar.warning(
+                title="无题目",
+                content="所选作业中没有找到题目",
                 orient=Qt.Horizontal,
                 isClosable=True,
-                position=InfoBarPosition.TOP_RIGHT,
+                position=InfoBarPosition.TOP,
                 duration=3000,
                 parent=self.window()
             )
+            return
+        
+        # 弹出导出对话框
+        from ui.export_dialog import ExportDialog
+        homework_title = f"{len(homework_titles)}个作业合集"
+        dialog = ExportDialog(questions, homework_title, course_name, self.window())
+        dialog.exec()
+        
+        app_logger.info(f"批量导出: {len(questions)} 道题目，来自 {len(homework_titles)} 个作业")
+    
+    def _on_batch_error(self, error_msg: str):
+        """批量解析错误"""
+        self._set_loading(False)
+        InfoBar.error(
+            title="解析失败",
+            content=error_msg,
+            orient=Qt.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=5000,
+            parent=self.window()
+        )
     
     def _on_refresh(self):
         """刷新"""
@@ -523,9 +605,9 @@ class HomeworkListFluent(QWidget):
         self.table.setRowCount(0)
         self.course_label.setText("")
         
-        # 显示登录提示
-        self.empty_label.setText("暂无作业数据，请先登录")
-        self.login_hint_btn.show()
+        # 显示空状态提示
+        self.empty_label.setText("请选择课程查看作业")
+        self.login_hint_btn.hide()
         self.table.hide()
         self.empty_container.show()
         

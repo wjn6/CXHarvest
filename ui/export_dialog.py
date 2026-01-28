@@ -29,6 +29,7 @@ from qfluentwidgets import FluentIcon as FIF
 
 from core.enterprise_logger import app_logger
 from core.question_exporter import QuestionExporter, ExportOptions
+from core.export_history import get_export_history_manager
 
 
 class ExportWorker(QThread):
@@ -79,11 +80,14 @@ class ExportWorker(QThread):
 class ExportDialog(QDialog):
     """导出对话框"""
     
-    def __init__(self, questions: List[Dict], homework_title: str = "作业题目", parent=None):
+    def __init__(self, questions: List[Dict], homework_title: str = "作业题目", 
+                 course_name: str = "", parent=None):
         super().__init__(parent)
         self.questions = questions
         self.homework_title = homework_title
+        self.course_name = course_name
         self.export_worker = None
+        self._exported_files = []  # 保存导出的文件路径
         
         self.setWindowTitle("导出题目")
         self.setMinimumSize(550, 680)
@@ -474,6 +478,10 @@ class ExportDialog(QDialog):
         success_count = sum(1 for v in results.values() if v)
         total_count = len(results)
         
+        if success_count > 0:
+            # 保存导出历史记录
+            self._save_export_history(results)
+        
         if success_count == total_count:
             InfoBar.success(
                 title="导出成功",
@@ -518,21 +526,56 @@ class ExportDialog(QDialog):
             duration=5000,
             parent=self
         )
+    
+    def _save_export_history(self, results: dict):
+        """保存导出历史记录"""
+        try:
+            output_dir = self.path_edit.text()
+            base_name = self.filename_edit.text().strip() or self._sanitize_filename(self.homework_title)
+            
+            # 获取成功导出的格式
+            success_formats = [fmt for fmt, success in results.items() if success]
+            
+            for fmt in success_formats:
+                # 构建文件路径
+                ext_map = {'html': '.html', 'json': '.json', 'markdown': '.md', 'word': '.docx', 'pdf': '.pdf'}
+                ext = ext_map.get(fmt, f'.{fmt}')
+                file_path = os.path.join(output_dir, f"{base_name}{ext}")
+                
+                # 获取文件大小
+                file_size = 0
+                if os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path)
+                
+                # 保存记录
+                history_manager = get_export_history_manager()
+                history_manager.add_record(
+                    course_name=self.course_name or "未知课程",
+                    homework_titles=[self.homework_title],
+                    question_count=len(self.questions),
+                    export_format=fmt.upper(),
+                    file_path=file_path,
+                    file_size=file_size
+                )
+        except Exception as e:
+            app_logger.warning(f"保存导出历史失败: {e}")
 
 
-def show_export_dialog(questions: List[Dict], homework_title: str = "作业题目", parent=None) -> bool:
+def show_export_dialog(questions: List[Dict], homework_title: str = "作业题目", 
+                       course_name: str = "", parent=None) -> bool:
     """
     显示导出对话框
     
     Args:
         questions: 题目列表
         homework_title: 作业标题
+        course_name: 课程名称
         parent: 父窗口
         
     Returns:
         是否完成导出
     """
-    dialog = ExportDialog(questions, homework_title, parent)
+    dialog = ExportDialog(questions, homework_title, course_name, parent)
     return dialog.exec() == QDialog.Accepted
 
 

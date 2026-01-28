@@ -63,17 +63,20 @@ class MainWindowFluent(FluentWindow):
         from ui.course_list import CourseListFluent
         from ui.homework_list import HomeworkListFluent
         from ui.question_list import QuestionListFluent
+        from ui.export_history import ExportHistoryFluent
         from ui.login_dialog import LoginDialogFluent
         
         # 创建页面
         self.course_list = CourseListFluent(self)
         self.homework_list = HomeworkListFluent(self)
         self.question_list = QuestionListFluent(self)
+        self.export_history = ExportHistoryFluent(self)
         
         # 设置对象名称（用于导航识别）
         self.course_list.setObjectName("CourseListInterface")
         self.homework_list.setObjectName("HomeworkListInterface")
         self.question_list.setObjectName("QuestionListInterface")
+        self.export_history.setObjectName("ExportHistoryInterface")
         
         # 保存登录对话框类引用
         self._login_dialog_class = LoginDialogFluent
@@ -95,6 +98,11 @@ class MainWindowFluent(FluentWindow):
             self.question_list,
             FIF.EDIT,
             "题目列表"
+        )
+        self.addSubInterface(
+            self.export_history,
+            FIF.HISTORY,
+            "导出历史"
         )
         
         # 底部导航项
@@ -258,6 +266,10 @@ class MainWindowFluent(FluentWindow):
     def _on_homework_selected(self, homework_info: dict):
         """作业选择处理"""
         self.current_homework = homework_info
+        
+        # 传递课程名称到作业信息
+        if self.current_course:
+            homework_info['course_name'] = self.current_course.get('name', '')
         
         # 加载题目列表
         self.question_list.load_questions(homework_info, self.login_manager)

@@ -539,12 +539,13 @@ class QuestionListFluent(QWidget):
         empty_layout.setContentsMargins(0, 80, 0, 0)
         empty_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         
-        self.empty_label = BodyLabel("暂无题目数据，请先登录", self.empty_container)
+        self.empty_label = BodyLabel("请选择作业解析题目", self.empty_container)
         self.empty_label.setStyleSheet("color: #888888; font-size: 14px;")
         
         self.login_hint_btn = PrimaryPushButton("点击登录", self.empty_container)
         self.login_hint_btn.setFixedWidth(120)
         self.login_hint_btn.clicked.connect(lambda: self.login_required.emit())
+        self.login_hint_btn.hide()  # 默认隐藏
         
         empty_layout.addWidget(self.empty_label, alignment=Qt.AlignCenter)
         empty_layout.addSpacing(16)
@@ -796,13 +797,15 @@ class QuestionListFluent(QWidget):
         selected = [card.question_data for card in self.question_cards if card.is_selected]
         if selected:
             homework_title = self.current_homework.get('title', '作业题目') if self.current_homework else '作业题目'
-            show_export_dialog(selected, homework_title, self.window())
+            course_name = self.current_homework.get('course_name', '') if self.current_homework else ''
+            show_export_dialog(selected, homework_title, course_name, self.window())
     
     def _on_export_all(self):
         """导出全部题目"""
         if self.questions:
             homework_title = self.current_homework.get('title', '作业题目') if self.current_homework else '作业题目'
-            show_export_dialog(self.questions, homework_title, self.window())
+            course_name = self.current_homework.get('course_name', '') if self.current_homework else ''
+            show_export_dialog(self.questions, homework_title, course_name, self.window())
     
     def _set_loading(self, loading: bool):
         """设置加载状态"""
@@ -828,9 +831,9 @@ class QuestionListFluent(QWidget):
         self._clear_content()
         self.homework_label.setText("")
         
-        # 显示登录提示
-        self.empty_label.setText("暂无题目数据，请先登录")
-        self.login_hint_btn.show()
+        # 显示空状态提示
+        self.empty_label.setText("请选择作业解析题目")
+        self.login_hint_btn.hide()
         self.scroll_area.hide()
         self.empty_container.show()
         
