@@ -107,7 +107,7 @@ class QuestionExporter:
         
         for q in self.questions:
             # 统计正确/错误
-            is_correct = q.get('isCorrect') or q.get('is_correct')
+            is_correct = q.get('isCorrect') if 'isCorrect' in q else q.get('is_correct')
             if is_correct is True:
                 stats['correct_count'] += 1
             elif is_correct is False:
@@ -178,7 +178,9 @@ class QuestionExporter:
     
     def _is_correct(self, q: Dict) -> Optional[bool]:
         """判断是否正确"""
-        return q.get('isCorrect') or q.get('is_correct')
+        if 'isCorrect' in q:
+            return q.get('isCorrect')
+        return q.get('is_correct')
     
     def _sanitize_filename(self, filename: str) -> str:
         """清理文件名中的非法字符"""

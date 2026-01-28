@@ -247,17 +247,48 @@ class HomeworkManager(SessionManagerMixin):
     def build_homework_url_with_page(self, base_url, page_num):
         """构建带页码的作业列表URL
         
+        注意：超星分页URL格式与第一页不同
+        - 第一页: /mooc2/work/list?courseId=...&ut=s&t=...&stuenc=...&enc=...
+        - 分页: /mooc-ans/mooc2/work/list?courseId=...&enc=...&status=0&pageNum=N&topicId=0
+        
         Args:
-            base_url (str): 基础URL（不带page参数）
+            base_url (str): 基础URL（第一页URL）
             page_num (int): 页码（从1开始）
             
         Returns:
             str: 带页码的URL
         """
-        if '?' in base_url:
-            return f"{base_url}&page={page_num}"
-        else:
-            return f"{base_url}?page={page_num}"
+        from urllib.parse import urlparse, parse_qs, urlencode
+        
+        try:
+            parsed = urlparse(base_url)
+            params = parse_qs(parsed.query, keep_blank_values=True)
+            
+            # 提取核心参数
+            course_id = params.get('courseId', params.get('courseid', ['']))[0]
+            class_id = params.get('classId', params.get('clazzid', ['']))[0]
+            cpi = params.get('cpi', [''])[0]
+            enc = params.get('enc', [''])[0]
+            
+            # 构建分页URL（使用 mooc-ans 路径，只需核心参数+pageNum）
+            page_params = {
+                'courseId': course_id,
+                'classId': class_id,
+                'cpi': cpi,
+                'enc': enc,
+                'pageNum': str(page_num)
+            }
+            
+            page_url = f"https://mooc1.chaoxing.com/mooc-ans/mooc2/work/list?{urlencode(page_params)}"
+            return page_url
+            
+        except Exception as e:
+            # 降级：简单追加参数
+            app_logger.warning(f"构建分页URL失败: {e}，使用降级方案")
+            if '?' in base_url:
+                return f"{base_url}&pageNum={page_num}"
+            else:
+                return f"{base_url}?pageNum={page_num}"
 
     def extract_total_pages(self, soup):
         """从HTML中提取总页数
@@ -268,30 +299,40 @@ class HomeworkManager(SessionManagerMixin):
         Returns:
             int: 总页数，如果没有分页则返回1
         """
+        import re
+        
         try:
-            # 查找分页容器
-            page_div = soup.select_one('.pageDiv, #page')
-            if not page_div:
-                app_logger.debug("未找到分页容器，假定只有1页")
-                return 1
-            
-            # 查找所有页码
-            # 通常，页码是纯数字的 li 元素，排除 xl-prevPage, xl-nextPage, xl-disabled 等
-            page_items = page_div.select('li')
             max_page = 1
             
-            for item in page_items:
-                # 跳过导航按钮
-                classes = item.get('class', [])
-                if any(cls in classes for cls in ['xl-prevPage', 'xl-nextPage', 'xl-disabled', 'xl-disabled2']):
-                    continue
+            # 方法1: 从JavaScript代码中提取 pageNum（分页是JS动态加载的）
+            # 查找类似: $("#page").paging({ nowPage: 1, pageNum: 2, ... })
+            scripts = soup.find_all('script')
+            for script in scripts:
+                if script.string:
+                    # 匹配 pageNum : 2 或 pageNum: 2
+                    match = re.search(r'pageNum\s*:\s*(\d+)', script.string)
+                    if match:
+                        max_page = int(match.group(1))
+                        app_logger.info(f" 从JS中检测到分页，共 {max_page} 页")
+                        return max_page
+            
+            # 方法2: 从分页容器的li元素提取（如果JS已渲染）
+            page_div = soup.select_one('.pageDiv, #page')
+            if page_div:
+                page_items = page_div.select('li')
+                for item in page_items:
+                    classes = item.get('class', [])
+                    if any(cls in classes for cls in ['xl-prevPage', 'xl-nextPage', 'xl-disabled', 'xl-disabled2']):
+                        continue
+                    text = item.get_text(strip=True)
+                    if text.isdigit():
+                        page_num = int(text)
+                        if page_num > max_page:
+                            max_page = page_num
                 
-                # 尝试提取页码数字
-                text = item.get_text(strip=True)
-                if text.isdigit():
-                    page_num = int(text)
-                    if page_num > max_page:
-                        max_page = page_num
+                if max_page > 1:
+                    app_logger.info(f" 从DOM中检测到分页，共 {max_page} 页")
+                    return max_page
             
             app_logger.info(f" 检测到分页，共 {max_page} 页")
             return max_page
@@ -820,6 +861,7 @@ class HomeworkManager(SessionManagerMixin):
                 for page_num in range(2, total_pages + 1):
                     # 构建带页码的URL
                     page_url = self.build_homework_url_with_page(base_homework_url, page_num)
+                    app_logger.info(f" 第{page_num}页URL: {page_url}")
                     
                     # 获取该页内容
                     page_content = self.fetch_homework_list_online(page_url, f"{course_name} (第{page_num}页)")
