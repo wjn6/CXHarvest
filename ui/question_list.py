@@ -272,7 +272,7 @@ class QuestionCard(CardWidget):
     
     def _on_checkbox_changed(self, state):
         """选择框状态改变"""
-        self.is_selected = (state == Qt.Checked)
+        self.is_selected = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
         self.selection_changed.emit(self.is_selected)
     
     def _create_image_widget(self, img_info, max_size=150):
@@ -786,7 +786,7 @@ class QuestionListFluent(QWidget):
     
     def _on_select_all(self, state):
         """全选"""
-        checked = (state == Qt.Checked)
+        checked = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
         for card in self.question_cards:
             card.set_selected(checked)
     

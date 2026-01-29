@@ -507,7 +507,7 @@ class HomeworkListFluent(QWidget):
     
     def _on_select_all_changed(self, state):
         """全选状态改变"""
-        checked = state == Qt.Checked
+        checked = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
         for row in range(self.table.rowCount()):
             cb = self.table.cellWidget(row, 0)
             if cb:

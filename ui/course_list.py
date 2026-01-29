@@ -13,7 +13,7 @@ from PySide6.QtGui import QPixmap, QFont
 
 from qfluentwidgets import (
     CardWidget, SimpleCardWidget, ElevatedCardWidget,
-    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
+    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
     PrimaryPushButton, PushButton, TransparentPushButton, ToolButton,
     SearchLineEdit, ComboBox, InfoBar, InfoBarPosition,
     FlowLayout, SmoothScrollArea, IndeterminateProgressBar

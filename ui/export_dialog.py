@@ -19,9 +19,9 @@ from PySide6.QtGui import QFont
 
 from qfluentwidgets import (
     CardWidget, SimpleCardWidget,
-    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
+    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
     PrimaryPushButton, PushButton, TransparentPushButton, ToolButton,
-    CheckBox, ComboBox, ProgressBar,
+    CheckBox, ComboBox, ProgressBar, ProgressRing,
     InfoBar, InfoBarPosition, SmoothScrollArea, LineEdit
 )
 from qfluentwidgets import FluentIcon as FIF
@@ -77,7 +77,7 @@ class ExportWorker(QThread):
 
 
 class ExportDialog(QDialog):
-    """导出对话框"""
+    """导出对话框 - Fluent Design 风格"""
     
     def __init__(self, questions: List[Dict], homework_title: str = "作业题目", 
                  course_name: str = "", parent=None):
@@ -92,8 +92,23 @@ class ExportDialog(QDialog):
         self.setMinimumSize(550, 680)
         self.setModal(True)
         
+        # 应用 Fluent Design 样式
+        self._apply_fluent_style()
+        
         self._init_ui()
         self._load_default_path()
+    
+    def _apply_fluent_style(self):
+        """应用 Fluent Design 样式"""
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #F9F9F9;
+                border-radius: 8px;
+            }
+            QLabel {
+                color: #333333;
+            }
+        """)
     
     def _init_ui(self):
         layout = QVBoxLayout(self)
