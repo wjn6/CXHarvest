@@ -44,7 +44,10 @@ class MainWindowFluent(FluentWindow):
         self._init_shortcuts()
         self._load_theme_from_config()
         
-        app_logger.info("主窗口初始化完成")
+        app_logger.info(f"主窗口初始化完成 v{__version__}")
+        
+        # 尝试恢复保存的登录状态
+        QTimer.singleShot(500, self._try_restore_login)
     
     def _init_window(self):
         """初始化窗口属性"""
@@ -169,6 +172,57 @@ class MainWindowFluent(FluentWindow):
         dialog = self._login_dialog_class(self)
         dialog.login_success.connect(self._on_login_success)
         dialog.exec()
+    
+    def _try_restore_login(self):
+        """尝试恢复保存的登录状态"""
+        try:
+            from core.login_manager import LoginManager
+            
+            # 创建登录管理器（会自动加载保存的cookies）
+            login_mgr = LoginManager()
+            
+            # 检查是否有cookies
+            if not login_mgr.session.cookies:
+                app_logger.info("无保存的登录状态")
+                return
+            
+            app_logger.info("正在验证保存的登录状态...")
+            
+            # 通过网络获取用户信息来验证cookies是否有效
+            user_info = login_mgr.get_user_info()
+            username = user_info.get('name', '')
+            
+            # 必须获取到真实用户名才算登录有效（非默认名称）
+            if username and username != '学习通用户':
+                app_logger.info(f"登录状态有效，用户: {username}")
+                
+                # 恢复登录状态
+                self.login_manager = login_mgr
+                self.user_info = user_info
+                
+                # 更新导航栏显示
+                self.navigationInterface.widget("login").setText(username)
+                
+                # 显示恢复成功消息
+                InfoBar.success(
+                    title="自动登录",
+                    content=f"欢迎回来，{username}",
+                    orient=Qt.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    duration=2000,
+                    parent=self
+                )
+                
+                # 强制刷新课程列表（每次获取最新数据）
+                QTimer.singleShot(300, lambda: self.course_list.load_courses(self.login_manager, force_refresh=True))
+            else:
+                app_logger.info("保存的登录状态已过期，需要重新登录")
+                # 清理无效的cookies
+                login_mgr.logout()
+                
+        except Exception as e:
+            app_logger.warning(f"恢复登录状态失败: {e}")
     
     def _on_login_success(self, user_info: dict):
         """登录成功处理"""

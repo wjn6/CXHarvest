@@ -146,7 +146,7 @@ class ImagePreviewDialog(QDialog):
         self._add_separator(toolbar)
         
         # 旋转按钮 - 顺时针旋转90°
-        rotate_btn = self._create_tool_btn(FIF.SYNC, "旋转90° (R)")
+        rotate_btn = self._create_tool_btn(FIF.ROTATE, "旋转90° (R)")
         rotate_btn.clicked.connect(lambda: self._rotate(90))
         toolbar.addWidget(rotate_btn)
         

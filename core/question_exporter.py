@@ -649,8 +649,15 @@ class QuestionExporter:
                 except Exception as e:
                     app_logger.warning(f"Word添加图片失败: {e}")
     
-    def _add_images_to_pdf(self, story: List, images: List, max_width: float = 400):
-        """向PDF文档添加图片"""
+    def _add_images_to_pdf(self, story: List, images: List, max_width: float = 400, max_height: float = 500):
+        """向PDF文档添加图片
+        
+        Args:
+            story: PDF story列表
+            images: 图片数据列表
+            max_width: 最大宽度（点）
+            max_height: 最大高度（点），防止图片超出页面
+        """
         import io
         try:
             from reportlab.platypus import Image as RLImage
@@ -667,11 +674,16 @@ class QuestionExporter:
                 try:
                     img_stream = io.BytesIO(img_bytes)
                     rl_img = RLImage(img_stream)
-                    # 按比例缩放
-                    if rl_img.drawWidth > max_width:
-                        ratio = max_width / rl_img.drawWidth
-                        rl_img.drawWidth = max_width
+                    
+                    # 按比例缩放 - 同时限制宽度和高度
+                    width_ratio = max_width / rl_img.drawWidth if rl_img.drawWidth > max_width else 1
+                    height_ratio = max_height / rl_img.drawHeight if rl_img.drawHeight > max_height else 1
+                    ratio = min(width_ratio, height_ratio)
+                    
+                    if ratio < 1:
+                        rl_img.drawWidth *= ratio
                         rl_img.drawHeight *= ratio
+                    
                     story.append(rl_img)
                 except Exception as e:
                     app_logger.warning(f"PDF添加图片失败: {e}")

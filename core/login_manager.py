@@ -87,8 +87,8 @@ class LoginManager:
         self.enc = None
         self.user_info = {}
         
-        #  禁用自动加载历史cookie - 每次启动都需要重新登录
-        # app_logger.info(" 登录管理器初始化 - 禁用历史cookie加载")  # 减少重复日志
+        # 尝试加载保存的登录状态
+        self.load_cookies()
         
     def encrypt_aes(self, text):
         """AES-CBC加密"""
@@ -601,9 +601,19 @@ class LoginManager:
             return False
             
     def load_cookies(self):
-        """从文件加载cookies（已禁用）"""
-        #  禁用自动加载历史cookies
-        # app_logger.info(" Cookie加载已禁用 - 要求用户重新登录")  # 减少重复日志
+        """从文件加载cookies"""
+        try:
+            from .common import PathManager
+            session_path = PathManager.get_file_path("session.txt", "data")
+            if session_path.exists():
+                with open(session_path, 'r', encoding='utf-8') as f:
+                    cookies_dict = json.load(f)
+                if cookies_dict:
+                    self.session.cookies.update(cookies_dict)
+                    app_logger.info(f"已加载保存的登录状态，cookies数量: {len(cookies_dict)}")
+                    return True
+        except Exception as e:
+            app_logger.warning(f"加载cookies失败: {e}")
         return False
             
     def logout(self):

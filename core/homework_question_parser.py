@@ -1391,7 +1391,6 @@ class HomeworkQuestionParser:
 
             valid_question_count = 0
             seen_questions = set()  # 用于去重
-            current_section = type_sections[0]['title'] if type_sections else None
 
             for i, container in enumerate(question_containers, 1):
                 try:
@@ -1408,7 +1407,8 @@ class HomeworkQuestionParser:
                         valid_question_count += 1
                         question_info['question_number'] = valid_question_count  # 更新题目序号
                         
-                        # 添加分组信息
+                        # 确定题目所属分组：向上查找最近的 type_tit 元素
+                        current_section = self._find_question_section(container, type_sections)
                         question_info['section'] = current_section
                         
                         questions.append(question_info)
@@ -1464,6 +1464,42 @@ class HomeworkQuestionParser:
         except Exception as e:
             app_logger.error(f"解析作业失败: {e}")
             return []
+
+    def _find_question_section(self, container, type_sections):
+        """
+        确定题目所属的分组
+        通过向上遍历DOM树查找最近的 type_tit 元素
+        """
+        if not type_sections:
+            return None
+        
+        try:
+            # 方法1: 向上查找 type_tit 父元素
+            parent = container
+            for _ in range(15):  # 限制查找层数
+                if parent is None:
+                    break
+                # 检查同级前面的兄弟元素中是否有 type_tit
+                prev_sibling = parent.find_previous_sibling(['h2', 'div'], class_='type_tit')
+                if prev_sibling:
+                    section_text = prev_sibling.get_text(strip=True)
+                    if section_text:
+                        return section_text
+                parent = parent.parent
+            
+            # 方法2: 使用 find_previous 查找任意位置的 type_tit
+            prev_type_tit = container.find_previous(['h2', 'div'], class_='type_tit')
+            if prev_type_tit:
+                section_text = prev_type_tit.get_text(strip=True)
+                if section_text:
+                    return section_text
+            
+            # 方法3: 回退到第一个分组
+            return type_sections[0]['title'] if type_sections else None
+            
+        except Exception as e:
+            app_logger.warning(f"查找题目分组失败: {e}")
+            return type_sections[0]['title'] if type_sections else None
 
     def save_questions_to_file(self, questions, homework_title):
         """保存题目数据到JSON文件"""
