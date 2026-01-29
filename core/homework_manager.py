@@ -56,7 +56,7 @@ class HomeworkManager(SessionManagerMixin):
             'Referer': 'https://mooc1.chaoxing.com'
         }
 
-    def extract_course_params(self, course_data):
+    def extract_course_params(self, course_data: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """从课程数据中提取参数 - 按照原始logic_builder.py逻辑
         
         Args:
@@ -119,7 +119,7 @@ class HomeworkManager(SessionManagerMixin):
             app_logger.error("提取课程参数失败", {"error": str(e)})
             return None
     
-    def get_user_id_from_session(self):
+    def get_user_id_from_session(self) -> Optional[str]:
         """从session中获取用户ID"""
         try:
             # 方法1：访问用户主页获取ID
@@ -159,7 +159,7 @@ class HomeworkManager(SessionManagerMixin):
             app_logger.error("获取用户ID失败", {"error": str(e)})
             return None
 
-    def get_encryption_params(self, courseid, clazzid, cpi):
+    def get_encryption_params(self, courseid: str, clazzid: str, cpi: str) -> Optional[Dict[str, str]]:
         """获取加密参数
         
         Args:
@@ -218,7 +218,7 @@ class HomeworkManager(SessionManagerMixin):
             app_logger.error(f"获取加密参数失败: {e}")
             return None
 
-    def build_homework_url(self, courseid, clazzid, cpi, encryption_params):
+    def build_homework_url(self, courseid: str, clazzid: str, cpi: str, encryption_params: Dict[str, str]) -> str:
         """构建作业列表URL
         
         Args:
@@ -244,7 +244,7 @@ class HomeworkManager(SessionManagerMixin):
 
         return f"{base_url}?{'&'.join(params)}"
 
-    def build_homework_url_with_page(self, base_url, page_num):
+    def build_homework_url_with_page(self, base_url: str, page_num: int) -> str:
         """构建带页码的作业列表URL
         
         注意：超星分页URL格式与第一页不同
@@ -290,7 +290,7 @@ class HomeworkManager(SessionManagerMixin):
             else:
                 return f"{base_url}?pageNum={page_num}"
 
-    def extract_total_pages(self, soup):
+    def extract_total_pages(self, soup: BeautifulSoup) -> int:
         """从HTML中提取总页数
         
         Args:
@@ -341,7 +341,7 @@ class HomeworkManager(SessionManagerMixin):
             app_logger.warning(f" 提取页数失败: {e}，假定只有1页")
             return 1
 
-    def fetch_homework_list_online(self, homework_url, course_name="未知课程"):
+    def fetch_homework_list_online(self, homework_url: str, course_name: str = "未知课程") -> Optional[str]:
         """在线获取作业列表
         
         Args:
@@ -368,7 +368,7 @@ class HomeworkManager(SessionManagerMixin):
             app_logger.error(f" 访问 {course_name} 作业列表失败: {e}")
             return None
 
-    def find_homework_containers(self, soup):
+    def find_homework_containers(self, soup: BeautifulSoup) -> List[Any]:
         """查找作业容器元素
         
         Args:
@@ -418,7 +418,7 @@ class HomeworkManager(SessionManagerMixin):
 
         return []
 
-    def is_valid_homework_title(self, title):
+    def is_valid_homework_title(self, title: str) -> bool:
         """验证是否为有效的作业标题
         
         Args:
@@ -460,7 +460,7 @@ class HomeworkManager(SessionManagerMixin):
                 
         return True
 
-    def extract_homework_info(self, container, index, course_name=""):
+    def extract_homework_info(self, container: Any, index: int, course_name: str = "") -> Optional[Dict[str, Any]]:
         """从容器中提取作业信息
         
         Args:
@@ -536,7 +536,7 @@ class HomeworkManager(SessionManagerMixin):
             app_logger.error(f" 提取作业信息失败: {e}")
             return None
 
-    def extract_title(self, container):
+    def extract_title(self, container: Any) -> Optional[str]:
         """提取作业标题"""
         # 超星学习通特定结构：.right-content p.overHidden2
         title_element = container.select_one('.right-content p.overHidden2')
@@ -582,7 +582,7 @@ class HomeworkManager(SessionManagerMixin):
 
         return None
 
-    def extract_url(self, container):
+    def extract_url(self, container: Any) -> Optional[str]:
         """提取作业URL - 参考homework_list_parser.py逻辑"""
         # 超星学习通特定结构：从 data 属性获取URL
         data_url = container.get('data', '')
@@ -626,7 +626,7 @@ class HomeworkManager(SessionManagerMixin):
         app_logger.info(" 未能提取到作业URL")
         return None
 
-    def extract_status(self, container):
+    def extract_status(self, container: Any) -> str:
         """提取作业状态"""
         # 1. 优先查找特定的状态类名
         status_selectors = [
@@ -689,7 +689,7 @@ class HomeworkManager(SessionManagerMixin):
 
         return '未知状态'
 
-    def extract_deadline(self, container):
+    def extract_deadline(self, container: Any) -> Optional[str]:
         """提取截止时间"""
         text = container.get_text()
 
@@ -708,7 +708,7 @@ class HomeworkManager(SessionManagerMixin):
 
         return None
 
-    def extract_score(self, container):
+    def extract_score(self, container: Any) -> Optional[str]:
         """提取分数信息"""
         text = container.get_text()
 
@@ -727,7 +727,7 @@ class HomeworkManager(SessionManagerMixin):
 
         return None
 
-    def extract_submit_status(self, container):
+    def extract_submit_status(self, container: Any) -> Optional[str]:
         """提取提交状态"""
         text = container.get_text()
 
@@ -745,7 +745,7 @@ class HomeworkManager(SessionManagerMixin):
 
         return None
 
-    def extract_description(self, container):
+    def extract_description(self, container: Any) -> Optional[str]:
         """提取作业描述"""
         # 查找描述相关的元素
         desc_selectors = [
@@ -762,7 +762,7 @@ class HomeworkManager(SessionManagerMixin):
 
         return None
 
-    def parse_homework_content(self, html_content, course_name=""):
+    def parse_homework_content(self, html_content: str, course_name: str = "") -> List[Dict[str, Any]]:
         """解析作业列表HTML内容
         
         Args:

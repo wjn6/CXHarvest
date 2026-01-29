@@ -6,14 +6,14 @@
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDialog, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDialog, QFrame, QToolButton
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QPixmap, QCursor, QTransform
 
 from qfluentwidgets import (
-    CaptionLabel, ToolButton, SmoothScrollArea,
-    InfoBar, InfoBarPosition
+    BodyLabel, SmoothScrollArea,
+    InfoBar, InfoBarPosition, isDarkTheme, StrongBodyLabel
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -55,6 +55,10 @@ class ImagePreviewDialog(QDialog):
         self.setModal(True)
         self.setAttribute(Qt.WA_DeleteOnClose)  # 关闭时自动删除，释放内存
         
+        # 设置无边框窗口
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self._title_drag_pos = None
+        
         # 保存原始图片（复制一份，避免外部引用问题）
         self.original_pixmap = pixmap.copy()
         self._cached_rotated = None  # 缓存旋转后的图片
@@ -90,11 +94,24 @@ class ImagePreviewDialog(QDialog):
         img_h = int(self.original_pixmap.height() * self.current_scale)
         self.resize(min(img_w + 40, self.max_width), min(img_h + 120, self.max_height))
     
+    def _create_tool_btn(self, icon, tooltip):
+        """创建工具栏按钮 - 使用原生QToolButton避免QFont错误"""
+        btn = QToolButton(self)
+        btn.setIcon(icon.icon())
+        btn.setIconSize(QSize(16, 16))
+        btn.setFixedSize(32, 32)
+        btn.setToolTip(tooltip)
+        btn.setAutoRaise(True)
+        return btn
+    
     def _init_ui(self):
         """初始化UI"""
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
+        
+        # ===== 自定义标题栏 =====
+        self._create_title_bar(main_layout)
         
         # ===== 顶部工具栏 =====
         toolbar_widget = QWidget()
@@ -104,55 +121,45 @@ class ImagePreviewDialog(QDialog):
         toolbar.setSpacing(8)
         
         # 状态信息
-        self.scale_label = CaptionLabel(self._get_status_text(), self)
+        self.scale_label = BodyLabel(self._get_status_text(), self)
         self.scale_label.setObjectName("statusLabel")
         toolbar.addWidget(self.scale_label)
         
         toolbar.addStretch()
         
         # 缩放控制组
-        zoom_out_btn = ToolButton(FIF.REMOVE, self)
-        zoom_out_btn.setToolTip("缩小 (−)")
+        zoom_out_btn = self._create_tool_btn(FIF.REMOVE, "缩小 (−)")
         zoom_out_btn.clicked.connect(lambda: self._zoom(-0.1))
         toolbar.addWidget(zoom_out_btn)
         
-        self.zoom_label = CaptionLabel(f"{int(self.current_scale * 100)}%", self)
+        self.zoom_label = BodyLabel(f"{int(self.current_scale * 100)}%", self)
         self.zoom_label.setFixedWidth(45)
         self.zoom_label.setAlignment(Qt.AlignCenter)
         self.zoom_label.setObjectName("zoomLabel")
         toolbar.addWidget(self.zoom_label)
         
-        zoom_in_btn = ToolButton(FIF.ADD, self)
-        zoom_in_btn.setToolTip("放大 (+)")
+        zoom_in_btn = self._create_tool_btn(FIF.ADD, "放大 (+)")
         zoom_in_btn.clicked.connect(lambda: self._zoom(0.1))
         toolbar.addWidget(zoom_in_btn)
         
         # 分隔
         self._add_separator(toolbar)
         
-        # 旋转控制组
-        rotate_left_btn = ToolButton(FIF.ROTATE, self)
-        rotate_left_btn.setToolTip("左旋90° (L)")
-        rotate_left_btn.clicked.connect(lambda: self._rotate(-90))
-        toolbar.addWidget(rotate_left_btn)
-        
-        rotate_right_btn = ToolButton(FIF.SYNC, self)
-        rotate_right_btn.setToolTip("右旋90° (R)")
-        rotate_right_btn.clicked.connect(lambda: self._rotate(90))
-        toolbar.addWidget(rotate_right_btn)
+        # 旋转按钮 - 顺时针旋转90°
+        rotate_btn = self._create_tool_btn(FIF.SYNC, "旋转90° (R)")
+        rotate_btn.clicked.connect(lambda: self._rotate(90))
+        toolbar.addWidget(rotate_btn)
         
         # 分隔
         self._add_separator(toolbar)
         
         # 重置按钮
-        reset_btn = ToolButton(FIF.HOME, self)
-        reset_btn.setToolTip("重置 (0)")
+        reset_btn = self._create_tool_btn(FIF.HOME, "重置 (0)")
         reset_btn.clicked.connect(self._reset_all)
         toolbar.addWidget(reset_btn)
         
         # 复制按钮
-        copy_btn = ToolButton(FIF.COPY, self)
-        copy_btn.setToolTip("复制图片 (Ctrl+C)")
+        copy_btn = self._create_tool_btn(FIF.COPY, "复制图片 (Ctrl+C)")
         copy_btn.clicked.connect(self._copy_image)
         toolbar.addWidget(copy_btn)
         
@@ -160,8 +167,7 @@ class ImagePreviewDialog(QDialog):
         self._add_separator(toolbar)
         
         # 关闭按钮
-        close_btn = ToolButton(FIF.CLOSE, self)
-        close_btn.setToolTip("关闭 (ESC)")
+        close_btn = self._create_tool_btn(FIF.CLOSE, "关闭 (ESC)")
         close_btn.clicked.connect(self.close)
         toolbar.addWidget(close_btn)
         
@@ -192,7 +198,7 @@ class ImagePreviewDialog(QDialog):
         hint_layout = QHBoxLayout(hint_widget)
         hint_layout.setContentsMargins(16, 8, 16, 8)
         
-        hint_label = CaptionLabel("滚轮缩放 · 拖动平移 · R/L旋转 · 双击复制 · ESC关闭", self)
+        hint_label = BodyLabel("滚轮缩放 · 拖动平移 · R/L旋转 · 双击复制 · ESC关闭", self)
         hint_label.setObjectName("hintLabel")
         hint_layout.addWidget(hint_label)
         
@@ -200,7 +206,7 @@ class ImagePreviewDialog(QDialog):
         
         # 图片尺寸信息
         size_text = f"{self.original_pixmap.width()} × {self.original_pixmap.height()} px"
-        size_label = CaptionLabel(size_text, self)
+        size_label = BodyLabel(size_text, self)
         size_label.setObjectName("sizeLabel")
         hint_layout.addWidget(size_label)
         
@@ -208,6 +214,29 @@ class ImagePreviewDialog(QDialog):
         
         # ===== 应用样式 =====
         self._apply_style()
+    
+    def _create_title_bar(self, parent_layout):
+        """创建自定义标题栏"""
+        title_bar = QFrame(self)
+        title_bar.setFixedHeight(40)
+        title_bar.setObjectName("titleBar")
+        
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(16, 0, 8, 0)
+        title_layout.setSpacing(12)
+        
+        # 图标和标题
+        title_label = StrongBodyLabel("🖼️ 图片预览", title_bar)
+        title_layout.addWidget(title_label)
+        
+        title_layout.addStretch()
+        
+        # 关闭按钮
+        close_btn = self._create_tool_btn(FIF.CLOSE, "关闭")
+        close_btn.clicked.connect(self.close)
+        title_layout.addWidget(close_btn)
+        
+        parent_layout.addWidget(title_bar)
     
     def _add_separator(self, layout):
         """添加分隔线"""
@@ -219,68 +248,141 @@ class ImagePreviewDialog(QDialog):
         layout.addWidget(sep)
     
     def _apply_style(self):
-        """应用Fluent风格样式"""
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #1a1a1a;
-            }
-            #toolbar {
-                background-color: #2d2d2d;
-                border-bottom: 1px solid #3d3d3d;
-            }
-            #statusLabel, #zoomLabel, #hintLabel, #sizeLabel {
-                color: #aaaaaa;
-            }
-            #zoomLabel {
-                color: #ffffff;
-            }
-            #separator {
-                background-color: #4d4d4d;
-            }
-            #imageScrollArea {
-                border: none;
-                background-color: transparent;
-            }
-            #imageContainer {
-                background-color: transparent;
-            }
-            #imageLabel {
-                background-color: transparent;
-            }
-            #hintBar {
-                background-color: #252525;
-                border-top: 1px solid #3d3d3d;
-            }
-            QScrollBar:vertical, QScrollBar:horizontal {
-                background-color: #2d2d2d;
-                width: 10px;
-                height: 10px;
-            }
-            QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-                background-color: #5a5a5a;
-                border-radius: 5px;
-                min-height: 30px;
-                min-width: 30px;
-            }
-            QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
-                background-color: #6a6a6a;
-            }
-            QScrollBar::add-line, QScrollBar::sub-line {
-                height: 0; width: 0;
-            }
-            ToolButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 4px;
-                padding: 6px;
-            }
-            ToolButton:hover {
-                background-color: #3d3d3d;
-            }
-            ToolButton:pressed {
-                background-color: #4d4d4d;
-            }
-        """)
+        """应用Fluent风格样式 - 跟随系统主题"""
+        if isDarkTheme():
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: #1a1a1a;
+                }
+                #titleBar {
+                    background-color: #1f1f1f;
+                    border-bottom: 1px solid #333333;
+                }
+                #toolbar {
+                    background-color: #2d2d2d;
+                    border-bottom: 1px solid #3d3d3d;
+                }
+                #statusLabel, #hintLabel, #sizeLabel {
+                    color: #aaaaaa;
+                    font-size: 12px;
+                }
+                #zoomLabel {
+                    color: #ffffff;
+                    font-size: 12px;
+                }
+                #separator {
+                    background-color: #4d4d4d;
+                }
+                #imageScrollArea {
+                    border: none;
+                    background-color: #1a1a1a;
+                }
+                #imageContainer {
+                    background-color: #1a1a1a;
+                }
+                #imageLabel {
+                    background-color: transparent;
+                }
+                #hintBar {
+                    background-color: #252525;
+                    border-top: 1px solid #3d3d3d;
+                }
+                QToolButton {
+                    background-color: transparent;
+                    border: none;
+                    border-radius: 4px;
+                }
+                QToolButton:hover {
+                    background-color: rgba(255, 255, 255, 0.1);
+                }
+                QToolButton:pressed {
+                    background-color: rgba(255, 255, 255, 0.05);
+                }
+                QScrollBar:vertical, QScrollBar:horizontal {
+                    background-color: #2d2d2d;
+                    width: 10px;
+                    height: 10px;
+                }
+                QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+                    background-color: #5a5a5a;
+                    border-radius: 5px;
+                    min-height: 30px;
+                    min-width: 30px;
+                }
+                QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+                    background-color: #6a6a6a;
+                }
+                QScrollBar::add-line, QScrollBar::sub-line {
+                    height: 0; width: 0;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: #f5f5f5;
+                }
+                #titleBar {
+                    background-color: #f3f3f3;
+                    border-bottom: 1px solid #e0e0e0;
+                }
+                #toolbar {
+                    background-color: #ffffff;
+                    border-bottom: 1px solid #e0e0e0;
+                }
+                #statusLabel, #hintLabel, #sizeLabel {
+                    color: #666666;
+                    font-size: 12px;
+                }
+                #zoomLabel {
+                    color: #333333;
+                    font-size: 12px;
+                }
+                #separator {
+                    background-color: #d0d0d0;
+                }
+                #imageScrollArea {
+                    border: none;
+                    background-color: #f5f5f5;
+                }
+                #imageContainer {
+                    background-color: #f5f5f5;
+                }
+                #imageLabel {
+                    background-color: transparent;
+                }
+                #hintBar {
+                    background-color: #fafafa;
+                    border-top: 1px solid #e0e0e0;
+                }
+                QToolButton {
+                    background-color: transparent;
+                    border: none;
+                    border-radius: 4px;
+                }
+                QToolButton:hover {
+                    background-color: rgba(0, 0, 0, 0.05);
+                }
+                QToolButton:pressed {
+                    background-color: rgba(0, 0, 0, 0.1);
+                }
+                QScrollBar:vertical, QScrollBar:horizontal {
+                    background-color: #f0f0f0;
+                    width: 10px;
+                    height: 10px;
+                }
+                QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+                    background-color: #c0c0c0;
+                    border-radius: 5px;
+                    min-height: 30px;
+                    min-width: 30px;
+                }
+                QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+                    background-color: #a0a0a0;
+                }
+                QScrollBar::add-line, QScrollBar::sub-line {
+                    height: 0; width: 0;
+                }
+            """)
     
     def _get_status_text(self):
         """获取状态文本"""
@@ -375,16 +477,25 @@ class ImagePreviewDialog(QDialog):
     def mousePressEvent(self, event):
         """鼠标按下 - 开始拖动"""
         if event.button() == Qt.LeftButton:
-            self._dragging = True
-            self._drag_start_pos = event.globalPosition().toPoint()
-            self._scroll_start_h = self.scroll_area.horizontalScrollBar().value()
-            self._scroll_start_v = self.scroll_area.verticalScrollBar().value()
-            self.setCursor(QCursor(Qt.ClosedHandCursor))
+            # 标题栏区域（前40px）用于拖动窗口
+            if event.position().y() < 40:
+                self._title_drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            else:
+                # 其他区域用于拖动图片
+                self._dragging = True
+                self._drag_start_pos = event.globalPosition().toPoint()
+                self._scroll_start_h = self.scroll_area.horizontalScrollBar().value()
+                self._scroll_start_v = self.scroll_area.verticalScrollBar().value()
+                self.setCursor(QCursor(Qt.ClosedHandCursor))
         super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
         """鼠标移动 - 拖动平移"""
-        if self._dragging and self._drag_start_pos:
+        # 标题栏拖动窗口
+        if self._title_drag_pos is not None and event.buttons() == Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._title_drag_pos)
+        # 图片拖动
+        elif self._dragging and self._drag_start_pos:
             delta = event.globalPosition().toPoint() - self._drag_start_pos
             self.scroll_area.horizontalScrollBar().setValue(self._scroll_start_h - delta.x())
             self.scroll_area.verticalScrollBar().setValue(self._scroll_start_v - delta.y())
@@ -393,6 +504,7 @@ class ImagePreviewDialog(QDialog):
     def mouseReleaseEvent(self, event):
         """鼠标释放 - 结束拖动"""
         if event.button() == Qt.LeftButton:
+            self._title_drag_pos = None
             self._dragging = False
             self._drag_start_pos = None
             self.setCursor(QCursor(Qt.ArrowCursor))

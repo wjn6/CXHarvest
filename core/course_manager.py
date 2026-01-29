@@ -96,7 +96,7 @@ class CourseManager(SessionManagerMixin):
                            {"file": self.courses_file})
         return success
 
-    def get_course_list(self, use_cache=True):
+    def get_course_list(self, use_cache: bool = True) -> List[Dict[str, Any]]:
         """获取课程列表"""
         try:
             # 如果允许使用缓存，先尝试从缓存加载
@@ -153,7 +153,7 @@ class CourseManager(SessionManagerMixin):
                     return cached_courses
             raise
             
-    def parse_course_data(self, html_content):
+    def parse_course_data(self, html_content: str) -> List[Dict[str, Any]]:
         """解析课程数据 - 参考原始course_list.py"""
         app_logger.info("正在解析课程页面内容...")
         try:
@@ -386,7 +386,7 @@ class CourseManager(SessionManagerMixin):
             app_logger.error(f"标准化课程数据失败: {e}")
             return None
             
-    def get_homework_list(self, course_id):
+    def get_homework_list(self, course_id: str) -> Dict[str, Any]:
         """获取指定课程的作业列表"""
         try:
             session = self.get_session()
@@ -406,7 +406,7 @@ class CourseManager(SessionManagerMixin):
             app_logger.error(f"获取作业列表失败: {e}")
             raise
             
-    def build_homework_url(self, course_id):
+    def build_homework_url(self, course_id: str) -> str:
         """构建作业列表URL"""
         # 这里需要根据超星学习通的实际URL格式来构建
         # 基础URL格式（需要根据实际情况调整）
@@ -417,7 +417,7 @@ class CourseManager(SessionManagerMixin):
         
         return url
         
-    def parse_homework_data(self, html_content, course_id):
+    def parse_homework_data(self, html_content: str, course_id: str) -> Dict[str, Any]:
         """解析作业数据"""
         try:
             soup = BeautifulSoup(html_content, 'html.parser')

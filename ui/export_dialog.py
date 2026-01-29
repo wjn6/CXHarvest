@@ -12,18 +12,16 @@ from typing import List, Dict, Optional
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget, QFrame,
-    QFileDialog, QSizePolicy, QApplication
+    QFileDialog, QGridLayout
 )
 from PySide6.QtCore import Qt, Signal, QThread
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor
 
 from qfluentwidgets import (
-    CardWidget, SimpleCardWidget,
-    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
-    PrimaryPushButton, PushButton, TransparentPushButton, ToolButton,
-    CheckBox, ComboBox, ProgressBar, ProgressRing,
-    InfoBar, InfoBarPosition, SmoothScrollArea, LineEdit,
-    isDarkTheme, setThemeColor
+    CardWidget, BodyLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
+    PrimaryPushButton, PushButton, TransparentPushButton, TransparentToolButton,
+    CheckBox, ProgressRing, InfoBar, InfoBarPosition, 
+    SmoothScrollArea, LineEdit, isDarkTheme
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -93,6 +91,13 @@ class ExportDialog(QDialog):
         self.setMinimumSize(700, 680)
         self.setModal(True)
         
+        # 设置无边框窗口
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        
+        # 用于窗口拖动
+        self._drag_pos = None
+        
         # 应用 Fluent Design 样式
         self._apply_fluent_style()
         
@@ -120,21 +125,80 @@ class ExportDialog(QDialog):
                 QLabel { color: #000000; }
             """)
     
-    def _init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+    def _create_title_bar(self, parent_layout):
+        """创建自定义标题栏"""
+        title_bar = QFrame(self)
+        title_bar.setFixedHeight(48)
+        title_bar.setObjectName("titleBar")
         
-        # 标题
-        title_layout = QHBoxLayout()
-        self.title_label = TitleLabel("📤 导出题目", self)
-        title_layout.addWidget(self.title_label)
+        # 标题栏样式
+        if isDarkTheme():
+            title_bar.setStyleSheet("""
+                #titleBar {
+                    background-color: #1f1f1f;
+                    border-bottom: 1px solid #333333;
+                }
+            """)
+        else:
+            title_bar.setStyleSheet("""
+                #titleBar {
+                    background-color: #f3f3f3;
+                    border-bottom: 1px solid #e0e0e0;
+                }
+            """)
+        
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(16, 0, 8, 0)
+        title_layout.setSpacing(12)
+        
+        # 图标和标题
+        title_label = StrongBodyLabel("📤 导出题目", title_bar)
+        title_layout.addWidget(title_label)
+        
         title_layout.addStretch()
         
-        # 统计信息
-        stats_label = CaptionLabel(f"共 {len(self.questions)} 道题目", self)
+        # 题目数量统计
+        stats_label = CaptionLabel(f"共 {len(self.questions)} 道题目", title_bar)
         title_layout.addWidget(stats_label)
-        layout.addLayout(title_layout)
+        
+        # 关闭按钮
+        close_btn = TransparentToolButton(FIF.CLOSE, title_bar)
+        close_btn.setFixedSize(32, 32)
+        close_btn.clicked.connect(self.reject)
+        title_layout.addWidget(close_btn)
+        
+        parent_layout.addWidget(title_bar)
+    
+    def mousePressEvent(self, event):
+        """鼠标按下事件 - 用于拖动窗口"""
+        if event.button() == Qt.LeftButton and event.position().y() < 48:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        """鼠标移动事件 - 用于拖动窗口"""
+        if self._drag_pos is not None and event.buttons() == Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+        super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        """鼠标释放事件"""
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
+    
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # 自定义标题栏
+        self._create_title_bar(layout)
+        
+        # 主内容区域（带边距）
+        content_widget = QWidget(self)
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(24, 16, 24, 24)
+        content_layout.setSpacing(16)
         
         # 滚动区域
         scroll = SmoothScrollArea(self)
@@ -159,7 +223,7 @@ class ExportDialog(QDialog):
         
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
-        layout.addWidget(scroll, 1)
+        content_layout.addWidget(scroll, 1)
         
         # 进度条
         self.progress_container = QFrame(self)
@@ -175,7 +239,7 @@ class ExportDialog(QDialog):
         progress_layout.addStretch()
         
         self.progress_container.hide()
-        layout.addWidget(self.progress_container)
+        content_layout.addWidget(self.progress_container)
         
         # 底部按钮
         button_layout = QHBoxLayout()
@@ -191,7 +255,8 @@ class ExportDialog(QDialog):
         self.export_btn.clicked.connect(self._start_export)
         button_layout.addWidget(self.export_btn)
         
-        layout.addLayout(button_layout)
+        content_layout.addLayout(button_layout)
+        layout.addWidget(content_widget)
     
     def _create_format_card(self, parent_layout):
         """创建格式选择卡片"""
@@ -254,8 +319,6 @@ class ExportDialog(QDialog):
     
     def _create_content_options_card(self, parent_layout):
         """创建内容选项卡片"""
-        from PySide6.QtWidgets import QGridLayout
-        
         card = CardWidget(self)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(16, 16, 16, 16)
@@ -298,8 +361,6 @@ class ExportDialog(QDialog):
     
     def _create_format_options_card(self, parent_layout):
         """创建格式选项卡片"""
-        from PySide6.QtWidgets import QGridLayout
-        
         card = CardWidget(self)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(16, 16, 16, 16)

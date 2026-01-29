@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QScrollArea, QFrame, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, QThread, QSize
+from PySide6.QtCore import Qt, Signal, QThread, QSize, QTimer
 from PySide6.QtGui import QPixmap, QFont
 
 from qfluentwidgets import (
@@ -27,6 +27,11 @@ from core.course_manager import CourseManager
 IMAGE_CACHE = {}
 IMAGE_CACHE_MAX_SIZE = 100  # 最大缓存100张图片
 
+# 图片加载并发控制
+_image_load_queue = []  # 等待加载的图片队列
+_active_image_count = 0  # 当前正在加载的图片数
+_max_concurrent_images = 5  # 最大并发加载数
+
 def _trim_image_cache():
     """裁剪图片缓存"""
     if len(IMAGE_CACHE) > IMAGE_CACHE_MAX_SIZE:
@@ -34,6 +39,22 @@ def _trim_image_cache():
         keys_to_remove = list(IMAGE_CACHE.keys())[:len(IMAGE_CACHE) // 2]
         for key in keys_to_remove:
             del IMAGE_CACHE[key]
+
+def _process_image_queue():
+    """处理图片加载队列"""
+    global _active_image_count
+    while _image_load_queue and _active_image_count < _max_concurrent_images:
+        worker, callback = _image_load_queue.pop(0)
+        worker.image_loaded.connect(callback)
+        worker.finished.connect(_on_image_worker_finished)
+        _active_image_count += 1
+        worker.start()
+
+def _on_image_worker_finished():
+    """图片加载完成，处理下一个"""
+    global _active_image_count
+    _active_image_count = max(0, _active_image_count - 1)
+    _process_image_queue()
 
 class CourseLoadWorker(QThread):
     """课程数据加载线程"""
@@ -162,7 +183,7 @@ class CourseCard(ElevatedCardWidget):
         main_layout.addLayout(text_layout, 1)
     
     def _load_image(self):
-        """异步加载课程封面图片"""
+        """异步加载课程封面图片 - 使用并发控制队列"""
         image_url = self.course_info.get('image') or self.course_info.get('cover_img')
         if not image_url:
             return
@@ -172,9 +193,10 @@ class CourseCard(ElevatedCardWidget):
             self._set_image(IMAGE_CACHE[image_url])
             return
 
+        # 使用并发控制队列加载图片
         self.image_worker = ImageLoadWorker(image_url)
-        self.image_worker.image_loaded.connect(self._on_image_loaded)
-        self.image_worker.start()
+        _image_load_queue.append((self.image_worker, self._on_image_loaded))
+        _process_image_queue()
     
     def _on_image_loaded(self, pixmap: QPixmap, url: str):
         """图片加载完成"""
@@ -480,9 +502,14 @@ class CourseListFluent(QWidget):
         self._update_stats()
         
     def _display_courses(self):
-        """显示课程卡片"""
+        """显示课程卡片 - 分批渲染避免卡死"""
+        # 停止之前的分批渲染
+        if hasattr(self, '_batch_timer') and self._batch_timer:
+            self._batch_timer.stop()
+            self._batch_timer = None
+        
         # 重建整个内容容器，彻底解决布局错位问题
-        if hasattr(self, 'content_widget'):
+        if hasattr(self, 'content_widget') and self.content_widget:
             self.content_widget.deleteLater()
             self.content_widget = None
             
@@ -508,20 +535,43 @@ class CourseListFluent(QWidget):
             
         self._hide_empty_state()
         
-        # 获取当前搜索关键词
-        keyword = self.search_edit.text().strip()
+        # 分批渲染参数
+        self._batch_index = 0
+        self._batch_size = 10  # 每批渲染10个卡片
+        self._batch_keyword = self.search_edit.text().strip()
         
-        # 重新创建卡片
-        for course in self.filtered_courses:
+        # 启动分批渲染
+        self._render_next_batch()
+    
+    def _render_next_batch(self):
+        """渲染下一批课程卡片"""
+        if not hasattr(self, '_batch_index'):
+            return
+            
+        start = self._batch_index
+        end = min(start + self._batch_size, len(self.filtered_courses))
+        
+        # 渲染当前批次
+        for i in range(start, end):
+            course = self.filtered_courses[i]
             card = CourseCard(course, self.content_widget)
             card.course_clicked.connect(self._on_card_clicked)
-            # 高亮关键词
-            if keyword:
-                card.highlight_keyword(keyword)
+            if self._batch_keyword:
+                card.highlight_keyword(self._batch_keyword)
             self.content_layout.addWidget(card)
         
-        # 强制更新布局
-        self.content_widget.adjustSize()
+        self._batch_index = end
+        
+        # 如果还有更多，延迟渲染下一批
+        if end < len(self.filtered_courses):
+            self._batch_timer = QTimer()
+            self._batch_timer.setSingleShot(True)
+            self._batch_timer.timeout.connect(self._render_next_batch)
+            self._batch_timer.start(10)  # 10ms后渲染下一批
+        else:
+            # 渲染完成，更新布局
+            self.content_widget.adjustSize()
+            self._batch_timer = None
     
     def _update_stats(self):
         """更新统计信息"""

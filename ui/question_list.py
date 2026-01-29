@@ -20,6 +20,8 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
+import re
+
 from core.enterprise_logger import app_logger
 from core.homework_question_parser import HomeworkQuestionParser
 from ui.export_dialog import show_export_dialog
@@ -118,6 +120,9 @@ class QuestionCard(CardWidget):
         
         # 题目内容（保留换行）
         content = self.question_data.get('content', '')
+        # 清理图片占位符
+        if content:
+            content = re.sub(r'\[图片[^\]]*\]\s*', '', content).strip()
         self.content_label = BodyLabel(self)
         self.content_label.setWordWrap(True)
         self.content_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -159,6 +164,9 @@ class QuestionCard(CardWidget):
                     text = str(opt)
                     opt_images = []
                 
+                # 清理选项中的图片占位符
+                text = re.sub(r'\[图片[^\]]*\]\s*', '', text).strip()
+                
                 opt_label = BodyLabel(text, self)
                 opt_label.setWordWrap(True)
                 opt_label.setStyleSheet("color: #555555; padding-left: 16px;")
@@ -183,7 +191,6 @@ class QuestionCard(CardWidget):
         # 清理答案文本中的图片占位符
         clean_my_answer = my_answer
         if clean_my_answer:
-            import re
             clean_my_answer = re.sub(r'\[图片[^\]]*\]\s*', '', clean_my_answer).strip()
         
         my_answer_container = QVBoxLayout()
@@ -226,21 +233,32 @@ class QuestionCard(CardWidget):
         answer = self.question_data.get('answer', '') or self.question_data.get('correct_answer', '')
         answer_images = self.question_data.get('answerImages', []) or self.question_data.get('correct_answer_images', [])
         
+        # 清理答案文本中的图片占位符
+        clean_answer = answer
+        if clean_answer:
+            clean_answer = re.sub(r'\[图片[^\]]*\]\s*', '', clean_answer).strip()
+        
         answer_container = QVBoxLayout()
         answer_header = QHBoxLayout()
         answer_title = CaptionLabel("正确答案:", self)
         answer_title.setStyleSheet("color: #27ae60;")
         answer_header.addWidget(answer_title)
         
-        if answer:
-            display_correct = answer[:200] + '...' if len(answer) > 200 else answer
+        # 有文本答案时显示文本，否则根据是否有图片决定显示内容
+        if clean_answer:
+            display_correct = clean_answer[:200] + '...' if len(clean_answer) > 200 else clean_answer
             answer_text = BodyLabel(display_correct, self)
             answer_text.setStyleSheet("color: #333;")
+            answer_text.setWordWrap(True)
+            answer_header.addWidget(answer_text, 1)
+        elif answer_images:
+            # 只有图片，不显示文本
+            answer_header.addStretch(1)
         else:
             answer_text = BodyLabel("(未设置)", self)
             answer_text.setStyleSheet("color: #aaa;")
-        answer_text.setWordWrap(True)
-        answer_header.addWidget(answer_text, 1)
+            answer_text.setWordWrap(True)
+            answer_header.addWidget(answer_text, 1)
         answer_container.addLayout(answer_header)
         
         # 正确答案中的图片
