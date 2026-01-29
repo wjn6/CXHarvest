@@ -27,6 +27,7 @@ class PathManager:
     """统一路径管理器
     
     集中管理所有输出目录，方便打包和维护。
+    所有运行时数据统一存放在 data/ 主文件夹下。
     """
     
     _app_root: Optional[Path] = None
@@ -45,22 +46,36 @@ class PathManager:
     
     @classmethod
     def get_data_dir(cls) -> Path:
-        """获取数据目录（存放缓存、配置）"""
+        """获取数据主目录（所有运行时数据的根目录）"""
         data_dir = cls.get_app_root() / "data"
         data_dir.mkdir(exist_ok=True)
         return data_dir
     
     @classmethod
     def get_logs_dir(cls) -> Path:
-        """获取日志目录"""
-        logs_dir = cls.get_app_root() / "logs"
+        """获取日志目录 - 位于 data/logs/"""
+        logs_dir = cls.get_data_dir() / "logs"
         logs_dir.mkdir(exist_ok=True)
         return logs_dir
     
     @classmethod
+    def get_cache_dir(cls) -> Path:
+        """获取缓存目录 - 位于 data/cache/"""
+        cache_dir = cls.get_data_dir() / "cache"
+        cache_dir.mkdir(exist_ok=True)
+        return cache_dir
+    
+    @classmethod
+    def get_config_dir(cls) -> Path:
+        """获取配置目录 - 位于 data/config/"""
+        config_dir = cls.get_data_dir() / "config"
+        config_dir.mkdir(exist_ok=True)
+        return config_dir
+    
+    @classmethod
     def get_temp_dir(cls) -> Path:
-        """获取临时文件目录（二维码、验证码等）"""
-        temp_dir = cls.get_app_root() / "temp"
+        """获取临时文件目录 - 位于 data/temp/"""
+        temp_dir = cls.get_data_dir() / "temp"
         temp_dir.mkdir(exist_ok=True)
         return temp_dir
     
@@ -77,11 +92,13 @@ class PathManager:
         
         Args:
             filename: 文件名
-            subdir: 子目录名（data, logs, temp, exports）
+            subdir: 子目录名（data, logs, cache, config, temp, exports）
         """
         dir_map = {
             "data": cls.get_data_dir,
             "logs": cls.get_logs_dir,
+            "cache": cls.get_cache_dir,
+            "config": cls.get_config_dir,
             "temp": cls.get_temp_dir,
             "exports": cls.get_exports_dir,
         }

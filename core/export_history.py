@@ -20,14 +20,11 @@ class ExportHistoryManager:
         """初始化
         
         Args:
-            history_file: 历史记录文件路径，默认为应用目录下的 export_history.json
+            history_file: 历史记录文件路径，默认使用 PathManager 获取
         """
         if history_file is None:
-            # 默认保存在应用目录的data子目录
-            app_dir = Path(__file__).parent.parent
-            data_dir = app_dir / "data"
-            data_dir.mkdir(exist_ok=True)  # 确保data目录存在
-            history_file = str(data_dir / "export_history.json")
+            from .common import PathManager
+            history_file = str(PathManager.get_file_path("export_history.json", "data"))
         
         self.history_file = history_file
         self._history: List[Dict] = []

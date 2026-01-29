@@ -6,7 +6,7 @@
 """
 
 from .common import (
-    AppConstants, safe_json_load, safe_json_save,
+    AppConstants, safe_json_load, safe_json_save, PathManager,
     os, json, requests, BeautifulSoup, re
 )
 from .enterprise_logger import app_logger
@@ -25,7 +25,8 @@ class HomeworkCountManager:
             
         self.headers = AppConstants.DEFAULT_HEADERS.copy()
         self.headers['Referer'] = 'https://mooc1.chaoxing.com'
-        self.count_cache_file = AppConstants.HOMEWORK_COUNT_CACHE_FILE
+        # 使用 PathManager 统一管理缓存路径
+        self.count_cache_file = str(PathManager.get_file_path("homework_counts.json", "cache"))
 
     def get_session(self):
         """获取登录session"""

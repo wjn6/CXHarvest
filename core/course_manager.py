@@ -63,8 +63,8 @@ class CourseManager(SessionManagerMixin):
         self.headers = AppConstants.DEFAULT_HEADERS.copy()
         self.headers['Referer'] = 'https://i.chaoxing.com/base'
         self.courses: List[Dict[str, Any]] = []
-        # 使用 PathManager 获取课程缓存文件路径
-        self.courses_file = PathManager.get_file_path("courses.json", "data")
+        # 使用 PathManager 获取课程缓存文件路径（放在 cache 目录）
+        self.courses_file = PathManager.get_file_path("courses.json", "cache")
         
     def load_courses_from_cache(self) -> List[Dict[str, Any]]:
         """从缓存文件加载课程列表

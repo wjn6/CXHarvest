@@ -79,9 +79,10 @@ class ConfigManager:
         """初始化配置管理器
         
         Args:
-            config_file: 配置文件路径
+            config_file: 配置文件名（将存储在 data/config/ 目录下）
         """
-        self.config_file = config_file
+        from .common import PathManager
+        self.config_file = str(PathManager.get_config_dir() / config_file)
         self._config = AppConfig()
         self._loaded = False
         
