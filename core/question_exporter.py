@@ -533,6 +533,10 @@ class QuestionExporter:
                     html += f'                <div class="score-info">得分: {score}</div>\n'
             
             html += '            </div>\n'
+            
+            # 分割线
+            if self.options.include_separator and i < len(self.questions):
+                html += '            <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 20px 0;">\n'
         
         html += f"""        </div>
         <div class="footer">
@@ -598,22 +602,34 @@ class QuestionExporter:
     def _get_image_bytes(self, img_data: dict) -> Optional[bytes]:
         """从图片数据获取字节流"""
         try:
-            src = img_data.get('src') or img_data.get('data', '')
-            if not src:
-                return None
+            # 优先使用data字段（base64编码）
+            data = img_data.get('data', '')
+            if data and data.startswith('data:image'):
+                if ',' in data:
+                    base64_str = data.split(',', 1)[1]
+                    return base64.b64decode(base64_str)
             
-            # base64 数据
-            if src.startswith('data:image'):
-                # 提取 base64 部分
+            # 尝试src字段
+            src = img_data.get('src', '')
+            if src and src.startswith('data:image'):
                 if ',' in src:
                     base64_str = src.split(',', 1)[1]
                     return base64.b64decode(base64_str)
-            elif src.startswith('http'):
-                # URL 图片，暂不支持
-                return None
+            
+            # URL图片 - 尝试下载
+            if src and src.startswith('http'):
+                try:
+                    import requests
+                    response = requests.get(src, timeout=10)
+                    if response.status_code == 200:
+                        return response.content
+                except Exception as e:
+                    app_logger.warning(f"下载图片失败: {src}, {e}")
+                    return None
             
             return None
-        except Exception:
+        except Exception as e:
+            app_logger.warning(f"获取图片字节流失败: {e}")
             return None
     
     def _add_images_to_word(self, doc, images: List, max_width_inches: float = 4.0):
@@ -924,6 +940,11 @@ class QuestionExporter:
                 content_run = content_para.add_run(content)
                 content_run.font.size = Pt(11)
                 
+                # 题目图片
+                title_images = q.get('title_images') or q.get('contentImages', [])
+                if title_images:
+                    self._add_images_to_word(doc, title_images, 4.0)
+                
                 # 选项
                 if options:
                     for opt in options:
@@ -989,8 +1010,17 @@ class QuestionExporter:
                         analysis_run.font.color.rgb = RGBColor(150, 100, 50)
                         analysis_run.italic = True
                 
-                # 题目间距
-                doc.add_paragraph()
+                # 分割线
+                if self.options.include_separator and i < len(self.questions):
+                    separator_para = doc.add_paragraph()
+                    separator_para.paragraph_format.space_before = Pt(10)
+                    separator_para.paragraph_format.space_after = Pt(10)
+                    separator_run = separator_para.add_run("─" * 60)
+                    separator_run.font.size = Pt(8)
+                    separator_run.font.color.rgb = RGBColor(200, 200, 200)
+                else:
+                    # 题目间距
+                    doc.add_paragraph()
             
             doc.save(output_path)
             app_logger.info(f"Word导出成功: {output_path}")
@@ -1128,6 +1158,12 @@ class QuestionExporter:
                 
                 # 题目内容
                 story.append(Paragraph(content, normal_style))
+                
+                # 题目图片
+                title_images = q.get('title_images') or q.get('contentImages', [])
+                if title_images:
+                    self._add_images_to_pdf(story, title_images)
+                
                 story.append(Spacer(1, 4))
                 
                 # 选项
@@ -1181,8 +1217,14 @@ class QuestionExporter:
                     if analysis:
                         story.append(Paragraph(f"<i><font color='#996633'>解析: {analysis}</font></i>", normal_style))
                 
-                # 题目间距
-                story.append(Spacer(1, 18))
+                # 分割线或间距
+                if self.options.include_separator and i < len(self.questions):
+                    from reportlab.platypus import HRFlowable
+                    story.append(Spacer(1, 10))
+                    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.lightgrey))
+                    story.append(Spacer(1, 10))
+                else:
+                    story.append(Spacer(1, 18))
             
             doc.build(story)
             app_logger.info(f"PDF导出成功: {output_path}")

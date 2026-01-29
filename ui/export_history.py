@@ -10,14 +10,13 @@ import platform
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame,
     QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QFileDialog, QPushButton
+    QAbstractItemView, QFileDialog
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QIcon
 
 from qfluentwidgets import (
     BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
-    PrimaryPushButton, PushButton,
+    PrimaryPushButton, PushButton, TransparentToolButton,
     InfoBar, InfoBarPosition, MessageBox,
     CardWidget, SearchLineEdit, TableWidget
 )
@@ -261,20 +260,16 @@ class ExportHistoryFluent(QWidget):
             btn_layout.setSpacing(4)
             btn_layout.setAlignment(Qt.AlignCenter)
             
-            # 打开文件按钮
-            open_btn = QPushButton(btn_widget)
-            open_btn.setIcon(FIF.FOLDER.icon())
+            # 打开文件按钮 - 使用TransparentToolButton自动适配主题
+            open_btn = TransparentToolButton(FIF.FOLDER, btn_widget)
             open_btn.setFixedSize(32, 32)
             open_btn.setEnabled(file_exists)
-            open_btn.setStyleSheet("QPushButton { border: none; background: transparent; } QPushButton:hover { background: rgba(0,0,0,0.05); border-radius: 4px; }")
             open_btn.clicked.connect(lambda checked, r=record: self._open_file_location(r))
             btn_layout.addWidget(open_btn)
             
             # 删除记录按钮
-            del_btn = QPushButton(btn_widget)
-            del_btn.setIcon(FIF.DELETE.icon())
+            del_btn = TransparentToolButton(FIF.DELETE, btn_widget)
             del_btn.setFixedSize(32, 32)
-            del_btn.setStyleSheet("QPushButton { border: none; background: transparent; } QPushButton:hover { background: rgba(0,0,0,0.05); border-radius: 4px; }")
             del_btn.clicked.connect(lambda checked, r=record: self._delete_record(r))
             btn_layout.addWidget(del_btn)
             

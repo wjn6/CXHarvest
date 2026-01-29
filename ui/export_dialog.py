@@ -22,7 +22,8 @@ from qfluentwidgets import (
     BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
     PrimaryPushButton, PushButton, TransparentPushButton, ToolButton,
     CheckBox, ComboBox, ProgressBar, ProgressRing,
-    InfoBar, InfoBarPosition, SmoothScrollArea, LineEdit
+    InfoBar, InfoBarPosition, SmoothScrollArea, LineEdit,
+    isDarkTheme, setThemeColor
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -89,7 +90,7 @@ class ExportDialog(QDialog):
         self._exported_files = []  # 保存导出的文件路径
         
         self.setWindowTitle("导出题目")
-        self.setMinimumSize(550, 680)
+        self.setMinimumSize(700, 680)
         self.setModal(True)
         
         # 应用 Fluent Design 样式
@@ -100,8 +101,24 @@ class ExportDialog(QDialog):
     
     def _apply_fluent_style(self):
         """应用 Fluent Design 样式 - 跟随系统主题"""
-        # 不硬编码颜色，让qfluentwidgets自动处理主题
-        pass
+        if isDarkTheme():
+            self.setStyleSheet("""
+                QDialog { background-color: #2d2d2d; color: #ffffff; }
+                CardWidget { background-color: #2d2d2d; border: none; border-bottom: 1px solid #404040; border-radius: 0px; }
+                SmoothScrollArea { background-color: #2d2d2d; border: none; }
+                SmoothScrollArea > QWidget > QWidget { background-color: #2d2d2d; }
+                QScrollBar:vertical { background-color: #2d2d2d; }
+                QLabel { color: #ffffff; }
+            """)
+        else:
+            self.setStyleSheet("""
+                QDialog { background-color: #ffffff; color: #000000; }
+                CardWidget { background-color: #ffffff; border: none; border-bottom: 1px solid #e8e8e8; border-radius: 0px; }
+                SmoothScrollArea { background-color: #ffffff; border: none; }
+                SmoothScrollArea > QWidget > QWidget { background-color: #ffffff; }
+                QScrollBar:vertical { background-color: #ffffff; }
+                QLabel { color: #000000; }
+            """)
     
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -122,12 +139,11 @@ class ExportDialog(QDialog):
         # 滚动区域
         scroll = SmoothScrollArea(self)
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("border: none;")
         
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(0, 0, 12, 0)
-        scroll_layout.setSpacing(16)
+        scroll_layout.setSpacing(0)  # 无间距，卡片紧密排列
         
         # 导出格式选择卡片
         self._create_format_card(scroll_layout)
@@ -147,7 +163,6 @@ class ExportDialog(QDialog):
         
         # 进度条
         self.progress_container = QFrame(self)
-        self.progress_container.setStyleSheet("background: transparent;")
         progress_layout = QHBoxLayout(self.progress_container)
         progress_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -197,10 +212,10 @@ class ExportDialog(QDialog):
         
         formats = [
             ('html', 'HTML', '精美网页格式，支持打印'),
+            ('pdf', 'PDF', '通用便携格式'),
+            ('word', 'Word', '正式文档格式 (.docx)'),
             ('json', 'JSON', '结构化数据，便于处理'),
             ('markdown', 'Markdown', '纯文本标记格式'),
-            ('word', 'Word', '正式文档格式 (.docx)'),
-            ('pdf', 'PDF', '通用便携格式'),
         ]
         
         for fmt_id, fmt_name, fmt_desc in formats:
@@ -210,7 +225,7 @@ class ExportDialog(QDialog):
             fmt_layout.setSpacing(2)
             
             check = CheckBox(fmt_name, fmt_widget)
-            check.setChecked(fmt_id in ['html', 'json'])  # 默认选中HTML和JSON
+            check.setChecked(fmt_id in ['html', 'pdf', 'word'])  # 默认选中HTML、PDF、Word
             self.format_checks[fmt_id] = check
             fmt_layout.addWidget(check)
             
@@ -239,6 +254,8 @@ class ExportDialog(QDialog):
     
     def _create_content_options_card(self, parent_layout):
         """创建内容选项卡片"""
+        from PySide6.QtWidgets import QGridLayout
+        
         card = CardWidget(self)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(16, 16, 16, 16)
@@ -248,51 +265,41 @@ class ExportDialog(QDialog):
         title = StrongBodyLabel("内容选项", card)
         card_layout.addWidget(title)
         
-        # 选项网格
-        options_layout = QHBoxLayout()
-        
-        # 左列
-        left_col = QVBoxLayout()
-        left_col.setSpacing(8)
+        # 使用网格布局，3列2行
+        grid = QGridLayout()
+        grid.setSpacing(16)
         
         self.check_my_answer = CheckBox("包含我的答案", card)
         self.check_my_answer.setChecked(True)
-        left_col.addWidget(self.check_my_answer)
-        
-        self.check_correct_answer = CheckBox("包含正确答案", card)
-        self.check_correct_answer.setChecked(True)
-        left_col.addWidget(self.check_correct_answer)
-        
-        self.check_score = CheckBox("包含得分信息", card)
-        self.check_score.setChecked(True)
-        left_col.addWidget(self.check_score)
-        
-        options_layout.addLayout(left_col)
-        
-        # 右列
-        right_col = QVBoxLayout()
-        right_col.setSpacing(8)
+        grid.addWidget(self.check_my_answer, 0, 0)
         
         self.check_analysis = CheckBox("包含答案解析", card)
         self.check_analysis.setChecked(True)
-        right_col.addWidget(self.check_analysis)
+        grid.addWidget(self.check_analysis, 0, 1)
+        
+        self.check_correct_answer = CheckBox("包含正确答案", card)
+        self.check_correct_answer.setChecked(True)
+        grid.addWidget(self.check_correct_answer, 1, 0)
         
         self.check_statistics = CheckBox("包含统计信息", card)
         self.check_statistics.setChecked(True)
-        right_col.addWidget(self.check_statistics)
+        grid.addWidget(self.check_statistics, 1, 1)
+        
+        self.check_score = CheckBox("包含得分信息", card)
+        self.check_score.setChecked(True)
+        grid.addWidget(self.check_score, 2, 0)
         
         self.check_images = CheckBox("包含图片", card)
         self.check_images.setChecked(True)
-        right_col.addWidget(self.check_images)
+        grid.addWidget(self.check_images, 2, 1)
         
-        options_layout.addLayout(right_col)
-        options_layout.addStretch()
-        
-        card_layout.addLayout(options_layout)
+        card_layout.addLayout(grid)
         parent_layout.addWidget(card)
     
     def _create_format_options_card(self, parent_layout):
         """创建格式选项卡片"""
+        from PySide6.QtWidgets import QGridLayout
+        
         card = CardWidget(self)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(16, 16, 16, 16)
@@ -302,28 +309,27 @@ class ExportDialog(QDialog):
         title = StrongBodyLabel("格式选项", card)
         card_layout.addWidget(title)
         
-        # 选项
-        options_layout = QHBoxLayout()
+        # 使用网格布局，2行2列
+        grid = QGridLayout()
+        grid.setSpacing(16)
         
         self.check_separator = CheckBox("题目间添加分割线", card)
-        self.check_separator.setChecked(True)
-        options_layout.addWidget(self.check_separator)
+        self.check_separator.setChecked(False)
+        grid.addWidget(self.check_separator, 0, 0)
         
         self.check_question_number = CheckBox("显示题目编号", card)
         self.check_question_number.setChecked(True)
-        options_layout.addWidget(self.check_question_number)
+        grid.addWidget(self.check_question_number, 0, 1)
         
         self.check_question_type = CheckBox("显示题目类型", card)
         self.check_question_type.setChecked(True)
-        options_layout.addWidget(self.check_question_type)
+        grid.addWidget(self.check_question_type, 1, 0)
         
         self.check_correct_status = CheckBox("显示正确/错误状态", card)
         self.check_correct_status.setChecked(True)
-        options_layout.addWidget(self.check_correct_status)
+        grid.addWidget(self.check_correct_status, 1, 1)
         
-        options_layout.addStretch()
-        card_layout.addLayout(options_layout)
-        
+        card_layout.addLayout(grid)
         parent_layout.addWidget(card)
     
     def _create_output_card(self, parent_layout):
