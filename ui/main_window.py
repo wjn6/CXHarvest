@@ -11,10 +11,10 @@ from PySide6.QtGui import QFont, QKeySequence, QShortcut
 
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, 
-    PrimaryPushButton, PushButton, TransparentPushButton,
+    PrimaryPushButton, PushButton,
     BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
     InfoBar, InfoBarPosition, StateToolTip,
-    BreadcrumbBar, MessageBoxBase, HyperlinkButton,
+    MessageBoxBase, HyperlinkButton,
     setTheme, Theme
 )
 from qfluentwidgets import FluentIcon as FIF

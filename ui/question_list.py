@@ -12,12 +12,11 @@ from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont, QPixmap, QCursor
 
 from qfluentwidgets import (
-    CardWidget, SimpleCardWidget, ElevatedCardWidget,
+    CardWidget, SimpleCardWidget,
     BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
     PrimaryPushButton, PushButton, TransparentPushButton, ToolButton,
-    SearchLineEdit, ComboBox, CheckBox, ProgressBar, ProgressRing, IndeterminateProgressBar,
-    InfoBar, InfoBarPosition, SmoothScrollArea, FlowLayout,
-    Flyout, FlyoutViewBase, ExpandGroupSettingCard
+    SearchLineEdit, ComboBox, CheckBox, IndeterminateProgressBar,
+    InfoBar, InfoBarPosition, SmoothScrollArea
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -596,6 +595,9 @@ class QuestionListFluent(QWidget):
     
     def load_questions(self, homework_info: dict, login_manager):
         """加载题目列表"""
+        # 清理之前的线程
+        self._cleanup_worker()
+        
         self.current_homework = homework_info
         self.login_manager = login_manager
         
@@ -612,7 +614,15 @@ class QuestionListFluent(QWidget):
         self.parse_worker.progress_update.connect(self._on_progress_update)
         self.parse_worker.error_occurred.connect(self._on_parse_error)
         self.parse_worker.finished.connect(lambda: self._set_loading(False))
+        self.parse_worker.finished.connect(self._cleanup_worker)
         self.parse_worker.start()
+    
+    def _cleanup_worker(self):
+        """清理工作线程"""
+        if self.parse_worker and self.parse_worker.isRunning():
+            self.parse_worker.quit()
+            self.parse_worker.wait(1000)
+        self.parse_worker = None
     
     def _on_questions_loaded(self, questions: list):
         """题目加载完成"""

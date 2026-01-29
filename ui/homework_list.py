@@ -13,11 +13,10 @@ from PySide6.QtGui import QFont, QColor
 
 from qfluentwidgets import (
     CardWidget, SimpleCardWidget,
-    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
+    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
     PrimaryPushButton, PushButton, TransparentPushButton, ToolButton,
-    SearchLineEdit, ComboBox, CheckBox, ProgressRing, IndeterminateProgressBar,
-    InfoBar, InfoBarPosition, TableWidget,
-    BreadcrumbBar
+    SearchLineEdit, ComboBox, CheckBox, IndeterminateProgressBar,
+    InfoBar, InfoBarPosition, TableWidget
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -331,6 +330,9 @@ class HomeworkListFluent(QWidget):
     
     def load_homework(self, course_info: dict, login_manager):
         """加载作业列表"""
+        # 清理之前的线程
+        self._cleanup_workers()
+        
         self.current_course = course_info
         self.login_manager = login_manager
         
@@ -347,6 +349,19 @@ class HomeworkListFluent(QWidget):
         self.load_worker.error_occurred.connect(self._on_load_error)
         self.load_worker.finished.connect(lambda: self._set_loading(False))
         self.load_worker.start()
+    
+    def _cleanup_workers(self):
+        """清理工作线程"""
+        if hasattr(self, 'load_worker') and self.load_worker and self.load_worker.isRunning():
+            self.load_worker.quit()
+            self.load_worker.wait(1000)
+        self.load_worker = None
+        
+        if hasattr(self, 'batch_worker') and self.batch_worker and self.batch_worker.isRunning():
+            self.batch_worker.quit()
+            self.batch_worker.wait(1000)
+        if hasattr(self, 'batch_worker'):
+            self.batch_worker = None
     
     def _on_homework_loaded(self, homework_list: list):
         """作业加载完成"""

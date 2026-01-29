@@ -13,18 +13,27 @@ from PySide6.QtGui import QPixmap, QFont
 
 from qfluentwidgets import (
     CardWidget, SimpleCardWidget, ElevatedCardWidget,
-    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
+    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
     PrimaryPushButton, PushButton, TransparentPushButton, ToolButton,
-    SearchLineEdit, ComboBox, ProgressRing, InfoBar, InfoBarPosition,
-    FlowLayout, SmoothScrollArea, IconWidget, IndeterminateProgressBar
+    SearchLineEdit, ComboBox, InfoBar, InfoBarPosition,
+    FlowLayout, SmoothScrollArea, IndeterminateProgressBar
 )
 from qfluentwidgets import FluentIcon as FIF
 
 from core.enterprise_logger import app_logger
 from core.course_manager import CourseManager
 
-# 全局图片缓存
+# 全局图片缓存（限制大小防止内存溢出）
 IMAGE_CACHE = {}
+IMAGE_CACHE_MAX_SIZE = 100  # 最大缓存100张图片
+
+def _trim_image_cache():
+    """裁剪图片缓存"""
+    if len(IMAGE_CACHE) > IMAGE_CACHE_MAX_SIZE:
+        # 删除一半旧缓存
+        keys_to_remove = list(IMAGE_CACHE.keys())[:len(IMAGE_CACHE) // 2]
+        for key in keys_to_remove:
+            del IMAGE_CACHE[key]
 
 class CourseLoadWorker(QThread):
     """课程数据加载线程"""
@@ -75,7 +84,8 @@ class ImageLoadWorker(QThread):
             if response.status_code == 200 and response.content:
                 pixmap = QPixmap()
                 if pixmap.loadFromData(response.content):
-                    # 存入缓存
+                    # 裁剪缓存后存入
+                    _trim_image_cache()
                     IMAGE_CACHE[self.url] = pixmap
                     self.image_loaded.emit(pixmap, self.url)
         except Exception as e:

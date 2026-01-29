@@ -5,8 +5,8 @@
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QStackedWidget, QLabel, QLineEdit, QSizePolicy
+    QWidget, QVBoxLayout, QHBoxLayout,
+    QStackedWidget, QLabel, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal, QThread, QTimer, QSize
 from PySide6.QtGui import QPixmap, QFont
