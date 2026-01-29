@@ -379,7 +379,6 @@ class CourseListFluent(QWidget):
         empty_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         
         self.empty_label = BodyLabel("暂无课程数据，请先登录", self.empty_container)
-        self.empty_label.setStyleSheet("color: #888888; font-size: 14px;")
         self.empty_label.setAlignment(Qt.AlignCenter)
         
         self.login_hint_btn = PrimaryPushButton("点击登录", self.empty_container)

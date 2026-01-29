@@ -99,16 +99,9 @@ class ExportDialog(QDialog):
         self._load_default_path()
     
     def _apply_fluent_style(self):
-        """应用 Fluent Design 样式"""
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #F9F9F9;
-                border-radius: 8px;
-            }
-            QLabel {
-                color: #333333;
-            }
-        """)
+        """应用 Fluent Design 样式 - 跟随系统主题"""
+        # 不硬编码颜色，让qfluentwidgets自动处理主题
+        pass
     
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -123,14 +116,13 @@ class ExportDialog(QDialog):
         
         # 统计信息
         stats_label = CaptionLabel(f"共 {len(self.questions)} 道题目", self)
-        stats_label.setStyleSheet("color: #888888;")
         title_layout.addWidget(stats_label)
         layout.addLayout(title_layout)
         
         # 滚动区域
         scroll = SmoothScrollArea(self)
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("background: transparent; border: none;")
+        scroll.setStyleSheet("border: none;")
         
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
@@ -164,7 +156,6 @@ class ExportDialog(QDialog):
         progress_layout.addWidget(self.progress_ring)
         
         self.progress_label = CaptionLabel("准备导出...", self.progress_container)
-        self.progress_label.setStyleSheet("color: #888888;")
         progress_layout.addWidget(self.progress_label)
         progress_layout.addStretch()
         
@@ -224,7 +215,6 @@ class ExportDialog(QDialog):
             fmt_layout.addWidget(check)
             
             hint = CaptionLabel(fmt_desc, fmt_widget)
-            hint.setStyleSheet("color: #999999; font-size: 10px;")
             fmt_layout.addWidget(hint)
             
             formats_layout.addWidget(fmt_widget)

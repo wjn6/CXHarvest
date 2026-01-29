@@ -423,10 +423,10 @@ class HomeworkQuestionParser:
             
             if type_input and type_input.get('value'):
                 try:
-                    val = int(type_input.get('value'))
+                    val = int(float(type_input.get('value')))
                     if val in OCS_QUESTION_TYPE_MAP:
                         return OCS_QUESTION_TYPE_MAP[val]
-                except ValueError:
+                except (ValueError, TypeError):
                     pass
             
             # 策略2: 从colorShallow提取
@@ -616,7 +616,7 @@ class HomeworkQuestionParser:
             
             if type_input and type_input.get('value'):
                 try:
-                    val = int(type_input.get('value'))
+                    val = int(float(type_input.get('value')))
                     # 映射关系参考 ocs.common.user.js getQuestionType
                     if val == 0: return '单选题'
                     if val == 1: return '多选题'
@@ -626,7 +626,7 @@ class HomeworkQuestionParser:
                     if val == 11: return '连线题'
                     if val == 14: return '完形填空'
                     if val == 15: return '阅读理解'
-                except ValueError:
+                except (ValueError, TypeError):
                     pass
 
             text_content = container.get_text().lower()

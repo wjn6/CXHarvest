@@ -287,7 +287,6 @@ class HomeworkListFluent(QWidget):
         empty_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         
         self.empty_label = BodyLabel("请选择课程查看作业", self.empty_container)
-        self.empty_label.setStyleSheet("color: #888888; font-size: 14px;")
         
         self.login_hint_btn = PrimaryPushButton("点击登录", self.empty_container)
         self.login_hint_btn.setFixedWidth(120)

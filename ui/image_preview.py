@@ -230,11 +230,9 @@ class ImagePreviewDialog(QDialog):
             }
             #statusLabel, #zoomLabel, #hintLabel, #sizeLabel {
                 color: #aaaaaa;
-                font-size: 12px;
             }
             #zoomLabel {
                 color: #ffffff;
-                font-weight: 500;
             }
             #separator {
                 background-color: #4d4d4d;

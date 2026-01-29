@@ -9,16 +9,17 @@ import subprocess
 import platform
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame,
-    QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QFileDialog
+    QTableWidgetItem, QHeaderView,
+    QAbstractItemView, QFileDialog, QPushButton
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QIcon
 
 from qfluentwidgets import (
     BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
-    PrimaryPushButton, PushButton, TransparentPushButton,
+    PrimaryPushButton, PushButton,
     InfoBar, InfoBarPosition, MessageBox,
-    CardWidget, SearchLineEdit
+    CardWidget, SearchLineEdit, TableWidget
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -38,8 +39,15 @@ class ExportHistoryFluent(QWidget):
     def _init_ui(self):
         """初始化UI"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(36, 20, 36, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(40, 24, 40, 24)
+        layout.setSpacing(20)
+        
+        # 设置页面样式
+        self.setStyleSheet("""
+            QWidget {
+                background-color: transparent;
+            }
+        """)
         
         # 标题区域
         self._create_header(layout)
@@ -56,15 +64,16 @@ class ExportHistoryFluent(QWidget):
     def _create_header(self, parent_layout):
         """创建标题区域"""
         header_layout = QHBoxLayout()
+        header_layout.setSpacing(16)
         
-        # 标题
+        # 图标和标题
         title = TitleLabel("导出历史", self)
         header_layout.addWidget(title)
         
         header_layout.addStretch()
         
         # 刷新按钮
-        refresh_btn = TransparentPushButton(FIF.SYNC, "刷新", self)
+        refresh_btn = PushButton(FIF.SYNC, "刷新", self)
         refresh_btn.clicked.connect(self._load_history)
         header_layout.addWidget(refresh_btn)
         
@@ -94,11 +103,11 @@ class ExportHistoryFluent(QWidget):
     def _create_stat_card(self, title: str, value: str, unit: str) -> CardWidget:
         """创建统计卡片"""
         card = CardWidget(self)
-        card.setFixedSize(120, 80)
+        card.setFixedSize(140, 90)
         
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(4)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(6)
         
         # 数值
         value_label = SubtitleLabel(value, card)
@@ -108,7 +117,6 @@ class ExportHistoryFluent(QWidget):
         
         # 标题
         title_label = CaptionLabel(f"{title}", card)
-        title_label.setStyleSheet("color: #888888;")
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
         
@@ -117,11 +125,12 @@ class ExportHistoryFluent(QWidget):
     def _create_toolbar(self, parent_layout):
         """创建工具栏"""
         toolbar_layout = QHBoxLayout()
+        toolbar_layout.setSpacing(12)
         
         # 搜索框
         self.search_edit = SearchLineEdit(self)
         self.search_edit.setPlaceholderText("搜索课程或作业...")
-        self.search_edit.setFixedWidth(250)
+        self.search_edit.setFixedWidth(280)
         self.search_edit.textChanged.connect(self._filter_history)
         toolbar_layout.addWidget(self.search_edit)
         
@@ -136,17 +145,22 @@ class ExportHistoryFluent(QWidget):
     
     def _create_table(self, parent_layout):
         """创建历史列表表格"""
-        self.table = QTableWidget(self)
+        self.table = TableWidget(self)
+        
+        # 启用边框并设置圆角
+        self.table.setBorderVisible(True)
+        self.table.setBorderRadius(8)
+        self.table.setWordWrap(False)
+        
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels([
-            "时间", "课程", "作业", "题目数", "格式", "文件", "操作"
+            "时间", "课程", "作业", "题目数", "格式", "状态", "操作"
         ])
         
         # 设置表格样式
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().hide()
         
         # 设置列宽
         header = self.table.horizontalHeader()
@@ -158,20 +172,19 @@ class ExportHistoryFluent(QWidget):
         header.setSectionResizeMode(5, QHeaderView.Fixed)
         header.setSectionResizeMode(6, QHeaderView.Fixed)
         
-        self.table.setColumnWidth(0, 140)  # 时间
-        self.table.setColumnWidth(3, 70)   # 题目数
+        self.table.setColumnWidth(0, 150)  # 时间
+        self.table.setColumnWidth(3, 80)   # 题目数
         self.table.setColumnWidth(4, 80)   # 格式
-        self.table.setColumnWidth(5, 80)   # 文件
-        self.table.setColumnWidth(6, 120)  # 操作
+        self.table.setColumnWidth(5, 80)   # 状态
+        self.table.setColumnWidth(6, 140)  # 操作
         
         # 设置行高
-        self.table.verticalHeader().setDefaultSectionSize(45)
+        self.table.verticalHeader().setDefaultSectionSize(50)
         
         parent_layout.addWidget(self.table, 1)
         
         # 空状态提示
         self.empty_label = BodyLabel("暂无导出记录", self)
-        self.empty_label.setStyleSheet("color: #888888; font-size: 14px;")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.hide()
         parent_layout.addWidget(self.empty_label)
@@ -244,21 +257,24 @@ class ExportHistoryFluent(QWidget):
             # 操作按钮
             btn_widget = QWidget()
             btn_layout = QHBoxLayout(btn_widget)
-            btn_layout.setContentsMargins(4, 4, 4, 4)
+            btn_layout.setContentsMargins(2, 2, 2, 2)
             btn_layout.setSpacing(4)
+            btn_layout.setAlignment(Qt.AlignCenter)
             
             # 打开文件按钮
-            open_btn = TransparentPushButton(FIF.FOLDER, "", self)
+            open_btn = QPushButton(btn_widget)
+            open_btn.setIcon(FIF.FOLDER.icon())
             open_btn.setFixedSize(32, 32)
-            open_btn.setToolTip("打开文件位置")
             open_btn.setEnabled(file_exists)
+            open_btn.setStyleSheet("QPushButton { border: none; background: transparent; } QPushButton:hover { background: rgba(0,0,0,0.05); border-radius: 4px; }")
             open_btn.clicked.connect(lambda checked, r=record: self._open_file_location(r))
             btn_layout.addWidget(open_btn)
             
             # 删除记录按钮
-            del_btn = TransparentPushButton(FIF.DELETE, "", self)
+            del_btn = QPushButton(btn_widget)
+            del_btn.setIcon(FIF.DELETE.icon())
             del_btn.setFixedSize(32, 32)
-            del_btn.setToolTip("删除记录")
+            del_btn.setStyleSheet("QPushButton { border: none; background: transparent; } QPushButton:hover { background: rgba(0,0,0,0.05); border-radius: 4px; }")
             del_btn.clicked.connect(lambda checked, r=record: self._delete_record(r))
             btn_layout.addWidget(del_btn)
             

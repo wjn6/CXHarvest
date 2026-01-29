@@ -315,7 +315,6 @@ class LoginDialogFluent(MessageBoxBase):
         self.qr_label.setFixedSize(180, 180)
         self.qr_label.setAlignment(Qt.AlignCenter)
         self.qr_label.setText("点击登录按钮\n获取二维码")
-        self.qr_label.setStyleSheet("color: #888888; font-size: 14px;")
         qr_layout.addWidget(self.qr_label)
         
         layout.addWidget(self.qr_container, alignment=Qt.AlignCenter)
