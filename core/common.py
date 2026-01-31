@@ -22,6 +22,9 @@ from urllib.parse import urljoin, urlparse
 from io import BytesIO
 from pathlib import Path
 
+# 导入统一版本号
+from .version import __version__
+
 
 class PathManager:
     """统一路径管理器
@@ -138,7 +141,7 @@ class AppConstants:
     
     # 应用信息
     APP_NAME = "超星收割机"
-    APP_VERSION = "2.1.0"
+    APP_VERSION = __version__  # 统一使用 version.py 中的版本号
     ORGANIZATION = "超星收割机"
     
     # 文件名常量
