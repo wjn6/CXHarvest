@@ -15,4 +15,4 @@ APP_NAME = "超星收割机"
 GITHUB_URL = "https://github.com/wjn6/CXHarvest"
 
 # 应用资源
-APP_ICON = "icon.ico"
+APP_ICON = "assets/icon.ico"

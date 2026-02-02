@@ -7,7 +7,7 @@
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QLabel
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
-from PySide6.QtGui import QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QIcon
 
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, 
@@ -21,7 +21,8 @@ from qfluentwidgets import FluentIcon as FIF
 import webbrowser
 
 from core.enterprise_logger import app_logger
-from core.version import __version__, APP_NAME, GITHUB_URL
+from core.version import __version__, APP_NAME, GITHUB_URL, APP_ICON
+from core.common import PathManager
 
 
 class MainWindowFluent(FluentWindow):
@@ -54,6 +55,11 @@ class MainWindowFluent(FluentWindow):
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
         self.resize(1000, 700)  # 默认使用最小尺寸
         self.setMinimumSize(1000, 700)
+        
+        # 设置应用图标
+        icon_path = PathManager.get_app_root() / APP_ICON
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         
         # 居中显示
         from PySide6.QtWidgets import QApplication

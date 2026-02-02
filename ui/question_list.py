@@ -24,6 +24,7 @@ import re
 
 from core.enterprise_logger import app_logger
 from core.homework_question_parser import HomeworkQuestionParser
+from core.common import get_question_field
 from ui.export_dialog import show_export_dialog
 from ui.image_preview import ImagePreviewDialog, ClickableImageLabel
 
@@ -677,7 +678,7 @@ class QuestionListFluent(QWidget):
         # 收集所有题目类型
         types = set()
         for q in self.questions:
-            q_type = q.get('type', '未知')
+            q_type = get_question_field(q, 'question_type', '未知')
             types.add(q_type)
         
         # 更新下拉框
@@ -765,17 +766,17 @@ class QuestionListFluent(QWidget):
         self.filtered_questions = []
         for q in self.questions:
             # 关键词匹配
-            content = q.get('content', '').lower()
+            content = get_question_field(q, 'content', '').lower()
             if keyword and keyword not in content:
                 continue
             
             # 类型匹配
-            q_type = q.get('type', '未知')
+            q_type = get_question_field(q, 'question_type', '未知')
             if type_filter != "全部类型" and q_type != type_filter:
                 continue
             
             # 状态匹配
-            is_correct = q.get('isCorrect', None)
+            is_correct = get_question_field(q, 'is_correct', None)
             if status_filter == 1 and is_correct is not True:
                 continue
             if status_filter == 2 and is_correct is not False:
@@ -788,8 +789,8 @@ class QuestionListFluent(QWidget):
     def _update_stats(self):
         """更新统计信息"""
         total = len(self.questions)
-        correct = sum(1 for q in self.questions if q.get('isCorrect') is True)
-        wrong = sum(1 for q in self.questions if q.get('isCorrect') is False)
+        correct = sum(1 for q in self.questions if get_question_field(q, 'is_correct') is True)
+        wrong = sum(1 for q in self.questions if get_question_field(q, 'is_correct') is False)
         
         self.total_label.findChild(SubtitleLabel, "stat_总题数").setText(str(total))
         self.correct_label.findChild(SubtitleLabel, "stat_正确").setText(str(correct))

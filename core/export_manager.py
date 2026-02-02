@@ -13,6 +13,7 @@ import base64
 import re
 from io import BytesIO
 from .enterprise_logger import app_logger
+from .common import get_question_field
 
 # 导入各种格式的导出器
 try:
@@ -186,10 +187,16 @@ class ExportManager:
             for option in question['options']:
                 label = option.get('label', '')
                 content = option.get('content', '')
+                opt_images = option.get('images') or []
+                
+                # 如果有图片，清理占位符文本
+                if opt_images:
+                    content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
+                
                 lines.append(f"- {label}. {content}")
                 # 选项图片
-                if config.get('include_images', True) and option.get('images'):
-                    for img in option['images']:
+                if config.get('include_images', True) and opt_images:
+                    for img in opt_images:
                         img_src = self._resolve_img_src(img)
                         if img_src:
                             lines.append(f"  \n  ![{img.get('alt','图片')}]({img_src})")
@@ -345,9 +352,15 @@ class ExportManager:
             for option in question['options']:
                 label = option.get('label', '')
                 content = option.get('content', '')
+                opt_images = option.get('images') or []
+                
+                # 如果有图片，清理占位符文本
+                if opt_images:
+                    content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
+                
                 html += f'<div class="option">{label}. {content}</div>'
-                if config.get('include_images', True):
-                    for img in option.get('images') or []:
+                if config.get('include_images', True) and opt_images:
+                    for img in opt_images:
                         img_src = self._resolve_img_src(img)
                         if img_src:
                             alt = img.get('alt', '图片')
@@ -416,15 +429,15 @@ class ExportManager:
                     story.append(Spacer(1, 8))
 
                 for idx, q in enumerate(questions, 1):
-                    q_text = q.get('title', q.get('question_text', ''))
-                    q_type = q.get('question_type', '')
+                    q_text = get_question_field(q, 'content', '')
+                    q_type = get_question_field(q, 'question_type', '')
                     header = f"{idx}. ({q_type}){q_text}" if q_type else f"{idx}. {q_text}"
                     story.append(Paragraph(header, styles['Heading4']))
                     story.append(Spacer(1, 6))
 
                     # 题干图片
                     if config.get('include_images', True):
-                        for img in (q.get('title_images') or []):
+                        for img in get_question_field(q, 'content_images', []):
                             img_src = self._resolve_img_src(img)
                             rl_img = self._image_from_base64_for_pdf(img_src, max_width=460)
                             if rl_img:
@@ -436,9 +449,15 @@ class ExportManager:
                         for opt in q['options']:
                             label = opt.get('label', '')
                             content = opt.get('content', '')
+                            opt_images = opt.get('images') or []
+                            
+                            # 如果有图片，清理占位符文本
+                            if opt_images:
+                                content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
+                            
                             story.append(Paragraph(f"{label}. {content}", styles['Normal']))
-                            if config.get('include_images', True):
-                                for img in (opt.get('images') or []):
+                            if config.get('include_images', True) and opt_images:
+                                for img in opt_images:
                                     img_src = self._resolve_img_src(img)
                                     rl_img = self._image_from_base64_for_pdf(img_src, max_width=420)
                                     if rl_img:
@@ -447,8 +466,8 @@ class ExportManager:
 
                     # 答案
                     if config.get('include_answers', True):
-                        my_answer = q.get('my_answer')
-                        correct_answer = q.get('correct_answer')
+                        my_answer = get_question_field(q, 'my_answer', '')
+                        correct_answer = get_question_field(q, 'correct_answer', '')
                         if my_answer:
                             story.append(Paragraph(f"我的答案: {my_answer}", styles['Normal']))
                         if correct_answer:
@@ -603,9 +622,15 @@ class ExportManager:
             for option in question['options']:
                 label = option.get('label', '')
                 content = option.get('content', '')
+                opt_images = option.get('images') or []
+                
+                # 如果有图片，清理占位符文本
+                if opt_images:
+                    content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
+                
                 doc.add_paragraph(f"{label}. {content}", style='List Bullet')
-                if config.get('include_images', True):
-                    for img in option.get('images') or []:
+                if config.get('include_images', True) and opt_images:
+                    for img in opt_images:
                         img_src = self._resolve_img_src(img)
                         try:
                             if img_src and img_src.startswith('data:image'):

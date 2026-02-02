@@ -22,8 +22,8 @@ from urllib.parse import urljoin, urlparse
 from io import BytesIO
 from pathlib import Path
 
-# 导入统一版本号
-from .version import __version__
+# 导入统一版本号和应用名称
+from .version import __version__, APP_NAME as _APP_NAME
 
 
 class PathManager:
@@ -139,10 +139,10 @@ from PIL import Image
 class AppConstants:
     """应用常量"""
     
-    # 应用信息
-    APP_NAME = "超星收割机"
-    APP_VERSION = __version__  # 统一使用 version.py 中的版本号
-    ORGANIZATION = "超星收割机"
+    # 应用信息 - 统一使用 version.py 中的值
+    APP_NAME = _APP_NAME
+    APP_VERSION = __version__
+    ORGANIZATION = "重庆彭于晏"
     
     # 文件名常量
     LOGIN_INFO_FILE = "login_info.json"
@@ -198,6 +198,43 @@ class HomeworkInfo:
     submit_status: str = ""
     description: str = ""
     course_name: str = ""
+
+
+# =============================================================================
+# 题目数据字段标准化
+# =============================================================================
+# 为了兼容不同模块使用的字段名，定义统一的字段映射
+QUESTION_FIELD_ALIASES = {
+    # 标准字段名: [可能的别名列表]
+    'question_type': ['type', 'question_type'],
+    'correct_answer': ['answer', 'correct_answer'],
+    'correct_answer_images': ['correct_answer_images', 'answerImages'],
+    'my_answer': ['myAnswer', 'my_answer'],
+    'my_answer_images': ['my_answer_images', 'myAnswerImages'],
+    'content': ['content', 'title'],
+    'content_images': ['title_images', 'contentImages'],
+    'is_correct': ['isCorrect', 'is_correct'],
+    'explanation': ['analysis', 'explanation'],
+}
+
+
+def get_question_field(q: Dict, field: str, default=None):
+    """统一获取题目字段值，自动处理字段别名
+    
+    Args:
+        q: 题目字典
+        field: 标准字段名
+        default: 默认值
+    
+    Returns:
+        字段值，如果都不存在则返回default
+    """
+    aliases = QUESTION_FIELD_ALIASES.get(field, [field])
+    for alias in aliases:
+        if alias in q:
+            return q[alias]
+    return default
+
 
 from .exceptions import AppError, LoginError, NetworkError, ParseError
 

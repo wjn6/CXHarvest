@@ -23,6 +23,7 @@ from pathlib import Path
 
 from core.enterprise_logger import app_logger
 from core.version import __version__, APP_NAME
+from core.common import get_question_field
 
 
 class ExportOptions:
@@ -108,7 +109,7 @@ class QuestionExporter:
         
         for q in self.questions:
             # 统计正确/错误
-            is_correct = q.get('isCorrect') if 'isCorrect' in q else q.get('is_correct')
+            is_correct = get_question_field(q, 'is_correct', None)
             if is_correct is True:
                 stats['correct_count'] += 1
             elif is_correct is False:
@@ -126,12 +127,12 @@ class QuestionExporter:
                     pass
             
             # 统计题型
-            q_type = q.get('type') or q.get('question_type', '未知')
+            q_type = get_question_field(q, 'question_type', '未知')
             stats['question_types'][q_type] = stats['question_types'].get(q_type, 0) + 1
             
             # 统计图片
-            stats['total_images'] += len(q.get('title_images', []))
-            stats['total_images'] += len(q.get('contentImages', []))
+            content_images = get_question_field(q, 'content_images', [])
+            stats['total_images'] += len(content_images)
             for opt in q.get('options', []):
                 if isinstance(opt, dict):
                     stats['total_images'] += len(opt.get('images', []))
@@ -145,24 +146,27 @@ class QuestionExporter:
         return stats
     
     def _get_question_content(self, q: Dict) -> str:
-        """获取题目内容"""
-        return q.get('content') or q.get('title', '')
+        """获取题目内容，清理图片占位符"""
+        content = get_question_field(q, 'content', '')
+        # 清理图片占位符文本，如 [图片:333.jpg] 或 [图片:图片]
+        content = re.sub(r'\[图片[：:][^\]]*\]', '', content).strip()
+        return content
     
     def _get_question_type(self, q: Dict) -> str:
         """获取题目类型"""
-        return q.get('type') or q.get('question_type', '未知')
+        return get_question_field(q, 'question_type', '未知')
     
     def _get_question_answer(self, q: Dict) -> str:
         """获取正确答案"""
-        return q.get('answer') or q.get('correct_answer', '')
+        return get_question_field(q, 'correct_answer', '')
     
     def _get_my_answer(self, q: Dict) -> str:
         """获取我的答案"""
-        return q.get('myAnswer') or q.get('my_answer', '')
+        return get_question_field(q, 'my_answer', '')
     
     def _get_analysis(self, q: Dict) -> str:
         """获取解析"""
-        return q.get('analysis') or q.get('explanation', '')
+        return get_question_field(q, 'explanation', '')
     
     def _get_options(self, q: Dict) -> List:
         """获取选项列表"""
@@ -179,9 +183,7 @@ class QuestionExporter:
     
     def _is_correct(self, q: Dict) -> Optional[bool]:
         """判断是否正确"""
-        if 'isCorrect' in q:
-            return q.get('isCorrect')
-        return q.get('is_correct')
+        return get_question_field(q, 'is_correct', None)
     
     def _sanitize_filename(self, filename: str) -> str:
         """清理文件名中的非法字符"""
@@ -485,21 +487,37 @@ class QuestionExporter:
             html += f'                <div class="question-content">{self._escape_html(content)}</div>\n'
             
             # 题目图片
-            title_images = q.get('title_images') or q.get('contentImages', [])
-            if title_images:
-                html += f'                {self._render_images_html(title_images)}'
+            content_images = get_question_field(q, 'content_images', [])
+            if content_images:
+                html += f'                {self._render_images_html(content_images)}'
             
-            # 选项
-            if options:
+            # 选项（包含图片）
+            raw_options = q.get('options', [])
+            if raw_options:
                 html += '                <ul class="options-list">\n'
-                for opt in options:
-                    html += f'                    <li>{self._escape_html(opt)}</li>\n'
+                for opt in raw_options:
+                    if isinstance(opt, dict):
+                        label = opt.get('label', '')
+                        content = opt.get('content', '')
+                        opt_images = opt.get('images', [])
+                        
+                        # 如果有图片，清理占位符文本
+                        if opt_images:
+                            import re
+                            content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
+                        
+                        html += f'                    <li>{self._escape_html(f"{label}. {content}")}'
+                        if opt_images:
+                            html += self._render_images_html(opt_images)
+                        html += '</li>\n'
+                    else:
+                        html += f'                    <li>{self._escape_html(str(opt))}</li>\n'
                 html += '                </ul>\n'
             
             # 我的答案
             if self.options.include_my_answer:
                 my_answer = self._get_my_answer(q)
-                my_answer_images = q.get('my_answer_images') or q.get('myAnswerImages', [])
+                my_answer_images = get_question_field(q, 'my_answer_images', [])
                 if my_answer or my_answer_images:
                     html += f'                <div class="answer-section my-answer"><span class="answer-label">我的答案:</span>'
                     if my_answer and '[图片' not in my_answer:
@@ -511,7 +529,7 @@ class QuestionExporter:
             # 正确答案
             if self.options.include_correct_answer:
                 correct_answer = self._get_question_answer(q)
-                correct_answer_images = q.get('correct_answer_images') or q.get('answerImages', [])
+                correct_answer_images = get_question_field(q, 'correct_answer_images', [])
                 if correct_answer or correct_answer_images:
                     html += f'                <div class="answer-section correct-answer"><span class="answer-label">正确答案:</span>'
                     if correct_answer and '[图片' not in correct_answer:
@@ -581,21 +599,30 @@ class QuestionExporter:
                 .replace("'", '&#39;'))
     
     def _render_images_html(self, images: List) -> str:
-        """渲染图片为HTML"""
+        """渲染图片为HTML，保持原始尺寸"""
         if not images or not self.options.include_images:
             return ""
         
         html = ""
         for img in images:
             if isinstance(img, dict):
-                src = img.get('src') or img.get('data', '')
+                # 优先使用 data（base64），因为原始URL可能需要认证
+                src = img.get('data') or img.get('src', '')
                 alt = img.get('alt', '图片')
+                # 使用原始尺寸，如果有的话
+                width = img.get('width', 0)
+                height = img.get('height', 0)
             else:
                 src = str(img)
                 alt = '图片'
+                width = height = 0
             
             if src:
-                html += f'<img class="question-image" src="{src}" alt="{alt}" />\n'
+                # 如果有原始尺寸则使用，否则使用max限制
+                if width > 0 and height > 0:
+                    html += f'<img class="question-image" src="{src}" alt="{alt}" width="{width}" height="{height}" style="max-width:100%;" />\n'
+                else:
+                    html += f'<img class="question-image" src="{src}" alt="{alt}" style="max-width:600px;" />\n'
         
         return html
     
@@ -632,22 +659,51 @@ class QuestionExporter:
             app_logger.warning(f"获取图片字节流失败: {e}")
             return None
     
-    def _add_images_to_word(self, doc, images: List, max_width_inches: float = 4.0):
-        """向Word文档添加图片"""
-        from docx.shared import Inches
+    def _add_images_to_word(self, doc, images: List, max_width_inches: float = 6.0):
+        """向Word文档添加图片，保持原始比例"""
+        from docx.shared import Inches, Pt
         import io
         
         if not images or not self.options.include_images:
             return
         
         for img in images:
-            img_bytes = self._get_image_bytes(img) if isinstance(img, dict) else None
-            if img_bytes:
-                try:
-                    img_stream = io.BytesIO(img_bytes)
-                    doc.add_picture(img_stream, width=Inches(max_width_inches))
-                except Exception as e:
-                    app_logger.warning(f"Word添加图片失败: {e}")
+            if not isinstance(img, dict):
+                continue
+            
+            img_bytes = self._get_image_bytes(img)
+            if not img_bytes:
+                continue
+            
+            try:
+                # 使用PIL转换为PNG格式，确保python-docx能识别
+                from PIL import Image
+                img_pil = Image.open(io.BytesIO(img_bytes))
+                orig_width, orig_height = img_pil.size
+                
+                # 转换为RGB模式（如果是RGBA或其他模式）
+                if img_pil.mode in ('RGBA', 'LA', 'P'):
+                    background = Image.new('RGB', img_pil.size, (255, 255, 255))
+                    if img_pil.mode == 'P':
+                        img_pil = img_pil.convert('RGBA')
+                    background.paste(img_pil, mask=img_pil.split()[-1] if img_pil.mode == 'RGBA' else None)
+                    img_pil = background
+                elif img_pil.mode != 'RGB':
+                    img_pil = img_pil.convert('RGB')
+                
+                # 保存为PNG到内存
+                png_buffer = io.BytesIO()
+                img_pil.save(png_buffer, format='PNG')
+                png_buffer.seek(0)
+                
+                # 计算尺寸：像素转英寸（96 DPI），但限制最大宽度
+                width_inches = orig_width / 96.0
+                if width_inches > max_width_inches:
+                    width_inches = max_width_inches
+                
+                doc.add_picture(png_buffer, width=Inches(width_inches))
+            except Exception as e:
+                app_logger.warning(f"Word添加图片失败: {type(e).__name__}: {e}")
     
     def _add_images_to_pdf(self, story: List, images: List, max_width: float = 400, max_height: float = 500):
         """向PDF文档添加图片
@@ -744,7 +800,7 @@ class QuestionExporter:
                 filtered['analysis'] = self._get_analysis(q)
             
             if self.options.include_images:
-                filtered['title_images'] = q.get('title_images', [])
+                filtered['content_images'] = get_question_field(q, 'content_images', [])
                 filtered['option_images'] = q.get('optionImages', [])
             
             filtered_questions.append(filtered)
@@ -953,16 +1009,34 @@ class QuestionExporter:
                 content_run.font.size = Pt(11)
                 
                 # 题目图片
-                title_images = q.get('title_images') or q.get('contentImages', [])
-                if title_images:
-                    self._add_images_to_word(doc, title_images, 4.0)
+                content_images = get_question_field(q, 'content_images', [])
+                if content_images:
+                    self._add_images_to_word(doc, content_images, 4.0)
                 
-                # 选项
-                if options:
-                    for opt in options:
-                        opt_para = doc.add_paragraph()
-                        opt_para.paragraph_format.left_indent = Inches(0.3)
-                        opt_run = opt_para.add_run(opt)
+                # 选项（包含图片）
+                raw_options = q.get('options', [])
+                for opt in raw_options:
+                    opt_para = doc.add_paragraph()
+                    opt_para.paragraph_format.left_indent = Inches(0.3)
+                    
+                    if isinstance(opt, dict):
+                        label = opt.get('label', '')
+                        content = opt.get('content', '')
+                        opt_images = opt.get('images', [])
+                        
+                        # 如果有图片，清理占位符文本
+                        if opt_images:
+                            import re
+                            content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
+                        
+                        opt_run = opt_para.add_run(f"{label}. {content}")
+                        opt_run.font.size = Pt(10)
+                        
+                        # 添加选项图片
+                        if opt_images:
+                            self._add_images_to_word(doc, opt_images, 3.0)
+                    else:
+                        opt_run = opt_para.add_run(str(opt))
                         opt_run.font.size = Pt(10)
                 
                 # 答案区域
@@ -971,7 +1045,7 @@ class QuestionExporter:
                 
                 if self.options.include_my_answer:
                     my_answer = self._get_my_answer(q)
-                    my_answer_images = q.get('my_answer_images') or q.get('myAnswerImages', [])
+                    my_answer_images = get_question_field(q, 'my_answer_images', [])
                     # 过滤掉图片占位符文本
                     if my_answer and '[图片' in my_answer:
                         my_answer = ''
@@ -989,7 +1063,7 @@ class QuestionExporter:
                 
                 if self.options.include_correct_answer:
                     correct_answer = self._get_question_answer(q)
-                    correct_answer_images = q.get('correct_answer_images') or q.get('answerImages', [])
+                    correct_answer_images = get_question_field(q, 'correct_answer_images', [])
                     if correct_answer and '[图片' in correct_answer:
                         correct_answer = ''
                     if correct_answer:
@@ -1172,23 +1246,40 @@ class QuestionExporter:
                 story.append(Paragraph(content, normal_style))
                 
                 # 题目图片
-                title_images = q.get('title_images') or q.get('contentImages', [])
-                if title_images:
-                    self._add_images_to_pdf(story, title_images)
+                content_images = get_question_field(q, 'content_images', [])
+                if content_images:
+                    self._add_images_to_pdf(story, content_images)
                 
                 story.append(Spacer(1, 4))
                 
-                # 选项
-                if options:
-                    for opt in options:
-                        story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;{opt}", normal_style))
+                # 选项（包含图片）
+                raw_options = q.get('options', [])
+                if raw_options:
+                    for opt in raw_options:
+                        if isinstance(opt, dict):
+                            label = opt.get('label', '')
+                            content = opt.get('content', '')
+                            opt_images = opt.get('images', [])
+                            
+                            # 如果有图片，清理占位符文本
+                            if opt_images:
+                                import re
+                                content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
+                            
+                            story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;{label}. {content}", normal_style))
+                            
+                            # 添加选项图片
+                            if opt_images:
+                                self._add_images_to_pdf(story, opt_images, max_width=350)
+                        else:
+                            story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;{opt}", normal_style))
                     story.append(Spacer(1, 4))
                 
                 # 答案（合并到一行）
                 ans_parts = []
                 if self.options.include_my_answer:
                     my_answer = self._get_my_answer(q)
-                    my_answer_images = q.get('my_answer_images') or q.get('myAnswerImages', [])
+                    my_answer_images = get_question_field(q, 'my_answer_images', [])
                     if my_answer and '[图片' in my_answer:
                         my_answer = ''
                     if my_answer:
@@ -1196,7 +1287,7 @@ class QuestionExporter:
                 
                 if self.options.include_correct_answer:
                     correct_answer = self._get_question_answer(q)
-                    correct_answer_images = q.get('correct_answer_images') or q.get('answerImages', [])
+                    correct_answer_images = get_question_field(q, 'correct_answer_images', [])
                     if correct_answer and '[图片' in correct_answer:
                         correct_answer = ''
                     if correct_answer:
@@ -1212,13 +1303,13 @@ class QuestionExporter:
                 
                 # 嵌入答案图片到PDF
                 if self.options.include_my_answer:
-                    my_answer_images = q.get('my_answer_images') or q.get('myAnswerImages', [])
+                    my_answer_images = get_question_field(q, 'my_answer_images', [])
                     if my_answer_images:
                         story.append(Paragraph("<font color='#0066CC'>我的答案图片:</font>", normal_style))
                         self._add_images_to_pdf(story, my_answer_images)
                 
                 if self.options.include_correct_answer:
-                    correct_answer_images = q.get('correct_answer_images') or q.get('answerImages', [])
+                    correct_answer_images = get_question_field(q, 'correct_answer_images', [])
                     if correct_answer_images:
                         story.append(Paragraph("<font color='#008800'>正确答案图片:</font>", normal_style))
                         self._add_images_to_pdf(story, correct_answer_images)
