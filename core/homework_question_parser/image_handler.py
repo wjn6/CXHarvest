@@ -7,7 +7,9 @@
 
 import base64
 import io
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, Optional
 from PIL import Image
 from ..enterprise_logger import app_logger
 
@@ -15,13 +17,108 @@ from ..enterprise_logger import app_logger
 class ImageHandler:
     """图片处理器"""
     
-    def __init__(self, login_manager=None):
+    def __init__(self, login_manager=None, max_cache_size: int = 100, max_image_size: int = 1024):
         self.login_manager = login_manager
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0'
         }
+        self.max_cache_size = max_cache_size
+        self.max_image_size = max_image_size
+        self._cache: Dict[str, str] = {}
+        self._cache_lock = threading.Lock()
+        self._session = None
+
+        if self.login_manager and hasattr(self.login_manager, 'session'):
+            self._session = self.login_manager.session
+
+    def set_session(self, session):
+        self._session = session
+
+    def clear_cache(self):
+        with self._cache_lock:
+            self._cache.clear()
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        with self._cache_lock:
+            return {
+                'cached_images': len(self._cache),
+                'max_cache_size': self.max_cache_size,
+                'cache_usage': f"{len(self._cache)}/{self.max_cache_size}"
+            }
+
+    def _get_session(self):
+        if self.login_manager and hasattr(self.login_manager, 'session'):
+            return self.login_manager.session
+        return self._session
+
+    def _normalize_url(self, url: str) -> str:
+        if url.startswith('//'):
+            return 'https:' + url
+        if url.startswith('/'):
+            return 'https://mooc1.chaoxing.com' + url
+        if url.startswith('http://'):
+            return url.replace('http://', 'https://')
+        if url.startswith('https://'):
+            return url
+
+        if url.startswith('p.ananas.chaoxing.com') or url.startswith('s.ananas.chaoxing.com'):
+            return 'https://' + url
+
+        return f"https://p.ananas.chaoxing.com/star3/240_130c/{url}"
+
+    def _download_image(self, url: str) -> Optional[Dict[str, Any]]:
+        session = self._get_session()
+        if not session:
+            return None
+
+        headers = {**self.headers, 'Referer': 'https://i.chaoxing.com/'}
+        response = session.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        content_type = (response.headers.get('content-type', '') or '').split(';')[0].strip()
+        if not content_type.startswith('image/'):
+            return None
+
+        return {
+            'bytes': response.content,
+            'content_type': content_type
+        }
+
+    def _compress_image(self, image_data: bytes) -> bytes:
+        try:
+            image = Image.open(io.BytesIO(image_data))
+            width, height = image.size
+
+            if max(width, height) > self.max_image_size:
+                if width > height:
+                    new_width = self.max_image_size
+                    new_height = int(height * self.max_image_size / width)
+                else:
+                    new_height = self.max_image_size
+                    new_width = int(width * self.max_image_size / height)
+                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+            if image.mode in ('RGBA', 'LA', 'P'):
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                if image.mode == 'P':
+                    image = image.convert('RGBA')
+                background.paste(image, mask=image.split()[-1] if image.mode == 'RGBA' else None)
+                image = background
+
+            output = io.BytesIO()
+            image.save(output, format='JPEG', quality=85, optimize=True)
+            return output.getvalue()
+        except Exception:
+            return image_data
+
+    def _cache_image(self, key: str, value: str):
+        with self._cache_lock:
+            if len(self._cache) >= self.max_cache_size:
+                first_key = next(iter(self._cache))
+                del self._cache[first_key]
+            self._cache[key] = value
     
-    def get_image_as_base64(self, url):
+    def get_image_as_base64(self, url, compress: bool = False):
         """将图片转换为Base64编码"""
         try:
             if not url or not url.strip():
@@ -30,55 +127,57 @@ class ImageHandler:
             # 对于已经是base64的数据，直接返回
             if url.startswith('data:image'):
                 return url
-            
-            # 处理相对路径，强制使用HTTPS
-            if url.startswith('//'):
-                safe_url = 'https:' + url
-            elif url.startswith('/'):
-                safe_url = 'https://mooc1.chaoxing.com' + url
-            elif url.startswith('http://'):
-                safe_url = url.replace('http://', 'https://')
-            else:
-                safe_url = url
-            
-            # 使用登录管理器的session获取图片
-            if self.login_manager and hasattr(self.login_manager, 'session'):
-                session = self.login_manager.session
-                headers = {**self.headers, 'Referer': 'https://i.chaoxing.com/'}
-                response = session.get(safe_url, headers=headers, timeout=10, verify=False)
-                response.raise_for_status()
-                
-                # 获取图片内容类型
-                content_type = response.headers.get('content-type', 'image/png')
-                if not content_type.startswith('image/'):
-                    content_type = 'image/png'
-                
-                # 转换为Base64
-                image_base64 = base64.b64encode(response.content).decode('utf-8')
-                data_url = f"data:{content_type};base64,{image_base64}"
-                
-                return data_url
-            else:
-                app_logger.info("无法获取登录session")
-                return url
+
+            cache_key = f"{1 if compress else 0}:{url}"
+            with self._cache_lock:
+                cached = self._cache.get(cache_key)
+            if cached:
+                return cached
+
+            safe_url = self._normalize_url(url)
+
+            download = self._download_image(safe_url)
+            if not download:
+                return None
+
+            image_bytes = download.get('bytes')
+            content_type = download.get('content_type') or 'image/png'
+            if not image_bytes:
+                return None
+
+            if compress:
+                image_bytes = self._compress_image(image_bytes)
+                content_type = 'image/jpeg'
+
+            image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+            data_url = f"data:{content_type};base64,{image_base64}"
+
+            self._cache_image(cache_key, data_url)
+            return data_url
             
         except Exception as e:
             app_logger.error(f"转换图片到Base64失败 {url}: {e}")
-            return url  # 如果转换失败，返回原始URL
+            return None
     
     def _process_single_image(self, img_info):
         """处理单个图片（用于并行处理）- 保证不抛异常"""
         # 安全解包
         try:
-            src, alt = img_info
-        except (ValueError, TypeError):
+            src = img_info[0]
+            alt = img_info[1] if len(img_info) > 1 else None
+            compress = img_info[2] if len(img_info) > 2 else False
+        except (ValueError, TypeError, IndexError):
             return None
         
         if not src:
             return None
             
         try:
-            base64_data = self.get_image_as_base64(src)
+            normalized_src = src
+            if not src.startswith('data:image'):
+                normalized_src = self._normalize_url(src)
+
+            base64_data = self.get_image_as_base64(src, compress=compress)
             
             # 尝试获取图片尺寸
             width = height = 0
@@ -92,7 +191,7 @@ class ImageHandler:
                 pass
             
             return {
-                'src': src,
+                'src': normalized_src,
                 'alt': alt or '图片',
                 'data': base64_data,
                 'width': width,
@@ -101,14 +200,14 @@ class ImageHandler:
         except Exception:
             # 任何异常都返回降级结果，不抛出
             return {
-                'src': src,
+                'src': normalized_src if 'normalized_src' in locals() else src,
                 'alt': alt or '图片',
-                'data': src,
+                'data': None,
                 'width': 0,
                 'height': 0
             }
 
-    def extract_images_from_element(self, element):
+    def extract_images_from_element(self, element, compress: bool = False):
         """从指定元素中提取图片并转换为Base64（并行处理，保持顺序）"""
         images = []
         if not element:
@@ -121,10 +220,10 @@ class ImageHandler:
             img_tasks = []
             
             for img in img_elements:
-                src = img.get('src')
+                src = img.get('src') or img.get('data-src')
                 if src and src not in unique_urls:
                     unique_urls.add(src)
-                    img_tasks.append((src, img.get('alt', '图片')))
+                    img_tasks.append((src, img.get('alt', '图片'), compress))
             
             # 并行处理图片（最多5个线程），使用map保持顺序
             if img_tasks:
@@ -143,17 +242,68 @@ class ImageHandler:
         results = {}
         if not urls:
             return results
-        
+
+        unique_urls = [u for u in dict.fromkeys([u for u in urls if u])]
+        if not unique_urls:
+            return results
+
         def fetch_one(url):
             return url, self.get_image_as_base64(url)
-        
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = [executor.submit(fetch_one, url) for url in urls]
+
+        max_workers = min(6, max(1, len(unique_urls)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(fetch_one, url) for url in unique_urls]
             for future in as_completed(futures):
                 try:
                     url, data = future.result()
                     results[url] = data
                 except Exception:
-                    pass
+                    url = None
+                    try:
+                        url, _ = future.result()
+                    except Exception:
+                        pass
+                    if url is not None:
+                        results[url] = None
         
+        for url in unique_urls:
+            if url not in results:
+                results[url] = None
+
+        return results
+
+    def process_image_url(self, url: str, compress: bool = True) -> Optional[str]:
+        return self.get_image_as_base64(url, compress=compress)
+
+    def batch_process_images(self, urls, compress: bool = True) -> Dict[str, Optional[str]]:
+        results: Dict[str, Optional[str]] = {}
+        if not urls:
+            return results
+
+        unique_urls = [u for u in dict.fromkeys([u for u in urls if u])]
+        if not unique_urls:
+            return results
+
+        def fetch_one(url):
+            return url, self.get_image_as_base64(url, compress=compress)
+
+        max_workers = min(6, max(1, len(unique_urls)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(fetch_one, url) for url in unique_urls]
+            for future in as_completed(futures):
+                try:
+                    url, data = future.result()
+                    results[url] = data
+                except Exception:
+                    url = None
+                    try:
+                        url, _ = future.result()
+                    except Exception:
+                        pass
+                    if url is not None:
+                        results[url] = None
+
+        for url in unique_urls:
+            if url not in results:
+                results[url] = None
         return results

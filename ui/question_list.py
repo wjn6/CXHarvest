@@ -76,14 +76,14 @@ class QuestionCard(CardWidget):
         top_layout = QHBoxLayout()
         
         # 序号和类型组合
-        q_type = self.question_data.get('type', '未知')
+        q_type = get_question_field(self.question_data, 'question_type', '未知')
         self.index_label = CaptionLabel(f"第 {self.index + 1} 题 · {q_type}", self)
         self.index_label.setStyleSheet("color: #666666;")
         top_layout.addWidget(self.index_label)
         
         # 得分显示
-        score = self.question_data.get('score', '') or self.question_data.get('得分', '')
-        total_score = self.question_data.get('totalScore', '') or self.question_data.get('满分', '')
+        score = get_question_field(self.question_data, 'score', '')
+        total_score = get_question_field(self.question_data, 'total_score', '')
         if score or total_score:
             score_text = f"{score}" if score else ""
             if total_score:
@@ -96,7 +96,7 @@ class QuestionCard(CardWidget):
                 top_layout.addWidget(score_label)
         
         # 正确/错误标记 - 仅对客观题显示
-        is_correct = self.question_data.get('isCorrect', None)
+        is_correct = get_question_field(self.question_data, 'is_correct', None)
         # 客观题类型
         objective_types = ['单选题', '多选题', '判断题', '选择题']
         is_objective = any(ot in q_type for ot in objective_types)
@@ -120,7 +120,7 @@ class QuestionCard(CardWidget):
         layout.addLayout(top_layout)
         
         # 题目内容（保留换行）
-        content = self.question_data.get('content', '')
+        content = get_question_field(self.question_data, 'content', '')
         # 清理图片占位符
         if content:
             content = re.sub(r'\[图片[^\]]*\]\s*', '', content).strip()
@@ -136,7 +136,7 @@ class QuestionCard(CardWidget):
         layout.addWidget(self.content_label)
         
         # 题目中的图片
-        title_images = self.question_data.get('title_images', []) or self.question_data.get('contentImages', [])
+        title_images = get_question_field(self.question_data, 'content_images', [])
         if title_images:
             images_layout = QHBoxLayout()
             images_layout.setSpacing(8)
@@ -186,8 +186,8 @@ class QuestionCard(CardWidget):
             layout.addLayout(options_layout)
         
         # 我的答案
-        my_answer = self.question_data.get('myAnswer', '') or self.question_data.get('my_answer', '')
-        my_answer_images = self.question_data.get('myAnswerImages', []) or self.question_data.get('my_answer_images', [])
+        my_answer = get_question_field(self.question_data, 'my_answer', '')
+        my_answer_images = get_question_field(self.question_data, 'my_answer_images', [])
         
         # 清理答案文本中的图片占位符
         clean_my_answer = my_answer
@@ -231,8 +231,8 @@ class QuestionCard(CardWidget):
         layout.addLayout(my_answer_container)
         
         # 正确答案
-        answer = self.question_data.get('answer', '') or self.question_data.get('correct_answer', '')
-        answer_images = self.question_data.get('answerImages', []) or self.question_data.get('correct_answer_images', [])
+        answer = get_question_field(self.question_data, 'correct_answer', '')
+        answer_images = get_question_field(self.question_data, 'correct_answer_images', [])
         
         # 清理答案文本中的图片占位符
         clean_answer = answer
@@ -276,7 +276,7 @@ class QuestionCard(CardWidget):
         layout.addLayout(answer_container)
         
         # 解析（如果有）
-        analysis = self.question_data.get('analysis', '') or self.question_data.get('explanation', '')
+        analysis = get_question_field(self.question_data, 'explanation', '')
         if analysis:
             analysis_layout = QVBoxLayout()
             analysis_title = CaptionLabel("解析:", self)
@@ -811,13 +811,13 @@ class QuestionListFluent(QWidget):
     def _select_correct(self):
         """选择正确题"""
         for card in self.question_cards:
-            is_correct = card.question_data.get('isCorrect')
+            is_correct = get_question_field(card.question_data, 'is_correct', None)
             card.set_selected(is_correct is True)
     
     def _select_wrong(self):
         """选择错误题"""
         for card in self.question_cards:
-            is_correct = card.question_data.get('isCorrect')
+            is_correct = get_question_field(card.question_data, 'is_correct', None)
             card.set_selected(is_correct is False)
     
     def _on_export_selected(self):

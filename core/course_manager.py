@@ -518,7 +518,7 @@ class CourseManager(SessionManagerMixin):
         """保存课程数据到文件"""
         try:
             data = {
-                'timestamp': datetime.datetime.now().isoformat(),
+                'timestamp': datetime.now().isoformat(),
                 'course_count': len(self.courses),
                 'courses': self.courses
             }

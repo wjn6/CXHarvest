@@ -22,7 +22,7 @@ from qfluentwidgets import FluentIcon as FIF
 
 from core.enterprise_logger import app_logger
 from core.homework_manager import HomeworkManager
-from core.homework_question_manager import HomeworkQuestionManager
+from core.homework_question_parser import HomeworkQuestionParser
 
 
 class HomeworkLoadWorker(QThread):
@@ -62,13 +62,13 @@ class BatchExportWorker(QThread):
             all_questions = []
             homework_titles = []
             total = len(self.homework_list)
+            parser = HomeworkQuestionParser(self.login_manager)
             
             for i, homework in enumerate(self.homework_list):
                 title = homework.get('title', '未知作业')
                 self.progress.emit(f'正在解析: {title}', int((i / total) * 100))
-                
-                manager = HomeworkQuestionManager(self.login_manager)
-                questions = manager.get_questions(homework)
+                homework_url = homework.get('url', '')
+                questions = parser.parse_homework_questions(homework_url, title)
                 
                 if questions:
                     all_questions.extend(questions)

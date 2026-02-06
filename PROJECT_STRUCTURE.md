@@ -14,8 +14,7 @@
 │   ├── login_manager.py   # 登录管理（Cookie/二维码/账密）
 │   ├── course_manager.py  # 课程管理
 │   ├── homework_manager.py         # 作业列表管理
-│   ├── homework_question_manager.py # 作业题目管理
-│   ├── homework_question_parser.py  # 题目解析器
+│   ├── homework_question_parser/    # 题目解析器（包含图片处理 ImageHandler）
 │   ├── question_exporter.py        # 题目导出（多格式）
 │   ├── export_history.py           # 导出历史管理
 │   ├── enterprise_logger.py        # 日志系统
@@ -48,7 +47,7 @@
 ```
 CourseManager.get_courses()     → 获取课程列表
 HomeworkManager.get_homework()  → 获取作业列表（支持分页）
-HomeworkQuestionParser.parse()  → 解析题目详情
+HomeworkQuestionParser.parse_homework_questions()  → 解析题目详情
 ```
 
 ### 3. 导出流程

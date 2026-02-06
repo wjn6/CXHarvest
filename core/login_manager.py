@@ -33,7 +33,6 @@ from io import BytesIO
 # =============================================================================
 # 项目内部导入
 # =============================================================================
-from .common import *
 from .enterprise_logger import app_logger
 
 class LoginManager:
@@ -49,10 +48,10 @@ class LoginManager:
             _timeout = int(getattr(net_cfg, 'timeout', 10) or 10)
             _retries = int(getattr(net_cfg, 'max_retries', 3) or 3)
             _backoff = float(getattr(net_cfg, 'retry_delay', 0.5) or 0.5)
-            _verify = bool(getattr(net_cfg, 'verify_ssl', False))
+            _verify = bool(getattr(net_cfg, 'verify_ssl', True))
             _pool = int(getattr(net_cfg, 'max_connections', 10) or 10)
         except Exception:
-            _timeout, _retries, _backoff, _verify, _pool = 10, 3, 0.5, False, 10
+            _timeout, _retries, _backoff, _verify, _pool = 10, 3, 0.5, True, 10
 
         # 配置SSL与重试
         self.session.verify = _verify

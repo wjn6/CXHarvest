@@ -118,7 +118,7 @@ class QuestionExporter:
                 stats['unanswered_count'] += 1
             
             # 统计分数
-            score_str = q.get('score', '')
+            score_str = get_question_field(q, 'score', '')
             if score_str:
                 try:
                     score = float(re.sub(r'[^\d.]', '', str(score_str)))
@@ -546,7 +546,7 @@ class QuestionExporter:
             
             # 得分
             if self.options.include_score:
-                score = q.get('score', '')
+                score = get_question_field(q, 'score', '')
                 if score:
                     html += f'                <div class="score-info">得分: {score}</div>\n'
             
@@ -780,11 +780,22 @@ class QuestionExporter:
         filtered_questions = []
         for q in self.questions:
             filtered = {
-                'question_number': q.get('question_number', ''),
-                'type': self._get_question_type(q),
                 'content': self._get_question_content(q),
                 'options': self._get_options(q),
             }
+
+            if self.options.include_question_number:
+                filtered['question_number'] = q.get('question_number', '')
+
+            if self.options.include_question_type:
+                filtered['question_type'] = self._get_question_type(q)
+
+            if self.options.include_homework_title:
+                filtered['homework_title'] = q.get('homework_title', '')
+
+            section = q.get('section', None)
+            if section:
+                filtered['section'] = section
             
             if self.options.include_my_answer:
                 filtered['my_answer'] = self._get_my_answer(q)
@@ -793,15 +804,19 @@ class QuestionExporter:
                 filtered['correct_answer'] = self._get_question_answer(q)
             
             if self.options.include_score:
-                filtered['score'] = q.get('score', '')
+                filtered['score'] = get_question_field(q, 'score', '')
+                filtered['total_score'] = get_question_field(q, 'total_score', '')
                 filtered['is_correct'] = self._is_correct(q)
             
             if self.options.include_analysis:
-                filtered['analysis'] = self._get_analysis(q)
+                filtered['explanation'] = self._get_analysis(q)
             
             if self.options.include_images:
                 filtered['content_images'] = get_question_field(q, 'content_images', [])
-                filtered['option_images'] = q.get('optionImages', [])
+                filtered['option_images'] = get_question_field(q, 'option_images', [])
+                filtered['my_answer_images'] = get_question_field(q, 'my_answer_images', [])
+                filtered['correct_answer_images'] = get_question_field(q, 'correct_answer_images', [])
+                filtered['explanation_images'] = get_question_field(q, 'explanation_images', [])
             
             filtered_questions.append(filtered)
         
@@ -914,7 +929,7 @@ class QuestionExporter:
             
             # 得分
             if self.options.include_score:
-                score = q.get('score', '')
+                score = get_question_field(q, 'score', '')
                 if score:
                     md += f"*得分: {score}*\n\n"
             
@@ -922,6 +937,154 @@ class QuestionExporter:
                 md += "---\n\n"
         
         return md
+
+    def export_excel(self, output_path: str) -> bool:
+        try:
+            import xlsxwriter
+        except ImportError:
+            app_logger.error("Excel导出需要安装xlsxwriter库: pip install xlsxwriter")
+            return False
+
+        workbook = None
+        try:
+            workbook = xlsxwriter.Workbook(output_path)
+            worksheet = workbook.add_worksheet('题目列表')
+
+            header_format = workbook.add_format({
+                'bold': True,
+                'bg_color': '#0891B2',
+                'font_color': 'white',
+                'border': 1,
+                'align': 'center',
+                'valign': 'vcenter'
+            })
+            cell_format = workbook.add_format({
+                'border': 1,
+                'text_wrap': True,
+                'valign': 'top'
+            })
+
+            headers = []
+            if self.options.include_question_number:
+                headers.append('序号')
+            if self.options.include_homework_title:
+                headers.append('作业')
+            headers.append('题目')
+            if self.options.include_question_type:
+                headers.append('类型')
+            headers.append('选项')
+            if self.options.include_my_answer:
+                headers.append('我的答案')
+            if self.options.include_correct_answer:
+                headers.append('正确答案')
+            if self.options.include_score:
+                headers.append('得分')
+            if self.options.show_correct_status:
+                headers.append('是否正确')
+            if self.options.include_analysis:
+                headers.append('解析')
+
+            for col, header in enumerate(headers):
+                worksheet.write(0, col, header, header_format)
+
+            worksheet.freeze_panes(1, 0)
+
+            for row, q in enumerate(self.questions, 1):
+                col = 0
+
+                if self.options.include_question_number:
+                    worksheet.write(row, col, row, cell_format)
+                    col += 1
+
+                if self.options.include_homework_title:
+                    worksheet.write(row, col, q.get('homework_title', ''), cell_format)
+                    col += 1
+
+                worksheet.write(row, col, self._get_question_content(q), cell_format)
+                col += 1
+
+                if self.options.include_question_type:
+                    worksheet.write(row, col, self._get_question_type(q), cell_format)
+                    col += 1
+
+                options_text = ""
+                raw_options = q.get('options', [])
+                if raw_options:
+                    opt_lines = []
+                    for opt in raw_options:
+                        if isinstance(opt, dict):
+                            label = opt.get('label', '')
+                            content = opt.get('content', '')
+                            opt_images = opt.get('images', [])
+                            if opt_images:
+                                content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
+                            if label:
+                                opt_lines.append(f"{label}. {content}")
+                            else:
+                                opt_lines.append(str(content))
+                        else:
+                            opt_lines.append(str(opt))
+                    options_text = "\n".join(opt_lines)
+                worksheet.write(row, col, options_text, cell_format)
+                col += 1
+
+                if self.options.include_my_answer:
+                    my_answer = self._get_my_answer(q)
+                    if my_answer and '[图片' in my_answer:
+                        my_answer = ''
+                    worksheet.write(row, col, my_answer, cell_format)
+                    col += 1
+
+                if self.options.include_correct_answer:
+                    correct_answer = self._get_question_answer(q)
+                    if correct_answer and '[图片' in correct_answer:
+                        correct_answer = ''
+                    worksheet.write(row, col, correct_answer, cell_format)
+                    col += 1
+
+                if self.options.include_score:
+                    worksheet.write(row, col, get_question_field(q, 'score', ''), cell_format)
+                    col += 1
+
+                if self.options.show_correct_status:
+                    is_correct = self._is_correct(q)
+                    status = '正确' if is_correct is True else ('错误' if is_correct is False else '')
+                    worksheet.write(row, col, status, cell_format)
+                    col += 1
+
+                if self.options.include_analysis:
+                    worksheet.write(row, col, self._get_analysis(q), cell_format)
+                    col += 1
+
+            col_widths = {
+                '序号': 8,
+                '作业': 20,
+                '题目': 40,
+                '类型': 12,
+                '选项': 30,
+                '我的答案': 15,
+                '正确答案': 15,
+                '得分': 10,
+                '是否正确': 10,
+                '解析': 30
+            }
+            for col, header in enumerate(headers):
+                worksheet.set_column(col, col, col_widths.get(header, 15))
+
+            workbook.close()
+            workbook = None
+            app_logger.info(f"Excel导出成功: {output_path}")
+            return True
+
+        except Exception as e:
+            app_logger.error(f"Excel导出失败: {e}")
+            return False
+        finally:
+            if workbook is not None:
+                try:
+                    workbook.close()
+                except Exception:
+                    pass
     
     # ==================== Word (DOCX) 导出 ====================
     
@@ -1080,7 +1243,7 @@ class QuestionExporter:
                 
                 # 得分
                 if self.options.include_score:
-                    score = q.get('score', '')
+                    score = get_question_field(q, 'score', '')
                     if score:
                         score_run = ans_para.add_run(f"    得分: {score}")
                         score_run.font.size = Pt(10)
@@ -1287,20 +1450,6 @@ class QuestionExporter:
                 
                 if self.options.include_correct_answer:
                     correct_answer = self._get_question_answer(q)
-                    correct_answer_images = get_question_field(q, 'correct_answer_images', [])
-                    if correct_answer and '[图片' in correct_answer:
-                        correct_answer = ''
-                    if correct_answer:
-                        ans_parts.append(f"<font color='#008800'>正确答案: {correct_answer}</font>")
-                
-                if self.options.include_score:
-                    score = q.get('score', '')
-                    if score:
-                        ans_parts.append(f"<font color='grey'>得分: {score}</font>")
-                
-                if ans_parts:
-                    story.append(Paragraph("&nbsp;&nbsp;&nbsp;&nbsp;".join(ans_parts), normal_style))
-                
                 # 嵌入答案图片到PDF
                 if self.options.include_my_answer:
                     my_answer_images = get_question_field(q, 'my_answer_images', [])

@@ -20,7 +20,7 @@ class NetworkConfig:
     timeout: int = 30
     max_retries: int = 3
     retry_delay: float = 1.0
-    verify_ssl: bool = False
+    verify_ssl: bool = True
     max_connections: int = 10
 
 @dataclass
@@ -208,7 +208,7 @@ class ConfigManager:
             timeout=network_data.get('timeout', 30),
             max_retries=network_data.get('max_retries', 3),
             retry_delay=network_data.get('retry_delay', 1.0),
-            verify_ssl=network_data.get('verify_ssl', False),
+            verify_ssl=network_data.get('verify_ssl', True),
             max_connections=network_data.get('max_connections', 10)
         )
         

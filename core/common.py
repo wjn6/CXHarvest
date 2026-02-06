@@ -110,18 +110,6 @@ class PathManager:
 
 
 # PySide6 核心导入
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
-    QLabel, QPushButton, QFrame, QLineEdit, QComboBox, QCheckBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea,
-    QMessageBox, QProgressBar, QDialog, QMainWindow, QStackedWidget,
-    QTabWidget, QTextEdit, QSpacerItem, QSizePolicy, QMenu,
-    QApplication, QGraphicsDropShadowEffect
-)
-from PySide6.QtCore import Qt, Signal, QThread, QTimer, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import (
-    QFont, QColor, QBrush, QPalette, QPixmap, QAction, QIcon
-)
 
 # 网络和解析相关
 import requests
@@ -206,15 +194,19 @@ class HomeworkInfo:
 # 为了兼容不同模块使用的字段名，定义统一的字段映射
 QUESTION_FIELD_ALIASES = {
     # 标准字段名: [可能的别名列表]
-    'question_type': ['type', 'question_type'],
-    'correct_answer': ['answer', 'correct_answer'],
+    'question_type': ['question_type', 'type'],
+    'correct_answer': ['correct_answer', 'answer'],
     'correct_answer_images': ['correct_answer_images', 'answerImages'],
-    'my_answer': ['myAnswer', 'my_answer'],
+    'my_answer': ['my_answer', 'myAnswer'],
     'my_answer_images': ['my_answer_images', 'myAnswerImages'],
     'content': ['content', 'title'],
-    'content_images': ['title_images', 'contentImages'],
-    'is_correct': ['isCorrect', 'is_correct'],
-    'explanation': ['analysis', 'explanation'],
+    'content_images': ['content_images', 'title_images', 'contentImages'],
+    'option_images': ['option_images', 'optionImages'],
+    'score': ['score', '得分'],
+    'total_score': ['total_score', 'totalScore', '满分'],
+    'is_correct': ['is_correct', 'isCorrect'],
+    'explanation': ['explanation', 'analysis'],
+    'explanation_images': ['explanation_images', 'analysisImages'],
 }
 
 
@@ -232,7 +224,18 @@ def get_question_field(q: Dict, field: str, default=None):
     aliases = QUESTION_FIELD_ALIASES.get(field, [field])
     for alias in aliases:
         if alias in q:
-            return q[alias]
+            value = q.get(alias)
+
+            if value is None:
+                continue
+
+            if isinstance(value, str) and not value.strip():
+                continue
+
+            if isinstance(value, (list, dict, set, tuple)) and not value:
+                continue
+
+            return value
     return default
 
 
@@ -303,16 +306,8 @@ def setup_session() -> requests.Session:
     """创建配置好的requests会话"""
     session = requests.Session()
     session.headers.update(AppConstants.DEFAULT_HEADERS)
-    session.verify = False
+    session.verify = True
     return session
-
-def get_pyside6_version():
-    """获取PySide6版本信息"""
-    try:
-        import PySide6
-        return PySide6.__version__
-    except:
-        return "未知版本"
 
 # 初始化设置（保留一次即可）
 setup_urllib3_warnings()

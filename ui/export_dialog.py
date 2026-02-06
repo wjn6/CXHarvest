@@ -67,6 +67,9 @@ class ExportWorker(QThread):
                 elif fmt == 'pdf':
                     path = os.path.join(self.output_dir, f"{self.base_name}.pdf")
                     results['pdf'] = self.exporter.export_pdf(path)
+                elif fmt == 'excel':
+                    path = os.path.join(self.output_dir, f"{self.base_name}.xlsx")
+                    results['excel'] = self.exporter.export_excel(path)
             
             self.progress.emit("导出完成", 100)
             self.finished.emit(results)
@@ -279,6 +282,7 @@ class ExportDialog(QDialog):
             ('html', 'HTML', '精美网页格式，支持打印'),
             ('pdf', 'PDF', '通用便携格式'),
             ('word', 'Word', '正式文档格式 (.docx)'),
+            ('excel', 'Excel', '表格格式 (.xlsx)'),
             ('json', 'JSON', '结构化数据，便于处理'),
             ('markdown', 'Markdown', '纯文本标记格式'),
         ]
@@ -609,7 +613,7 @@ class ExportDialog(QDialog):
             
             for fmt in success_formats:
                 # 构建文件路径
-                ext_map = {'html': '.html', 'json': '.json', 'markdown': '.md', 'word': '.docx', 'pdf': '.pdf'}
+                ext_map = {'html': '.html', 'json': '.json', 'markdown': '.md', 'word': '.docx', 'pdf': '.pdf', 'excel': '.xlsx'}
                 ext = ext_map.get(fmt, f'.{fmt}')
                 file_path = os.path.join(output_dir, f"{base_name}{ext}")
                 

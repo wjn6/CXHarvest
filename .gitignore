@@ -33,7 +33,6 @@ dist_nuitka/
 *.spec
 
 # ========== 构建脚本 (本地使用) ==========
-start.py
 build.py
 build_nuitka.py
 version_info.txt

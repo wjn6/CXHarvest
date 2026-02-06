@@ -33,16 +33,16 @@ def main():
     try:
         from PySide6.QtWidgets import QApplication
         from PySide6.QtCore import Qt
-        from qfluentwidgets import setTheme, Theme
-        
-        from ui.main_window import MainWindowFluent
-        
         app_logger.info(f"启动 {APP_NAME} v{__version__}")
         
         # 创建应用
         app = QApplication(sys.argv)
         app.setApplicationName(APP_NAME)
         app.setApplicationVersion(__version__)
+
+        from qfluentwidgets import setTheme, Theme
+        
+        from ui.main_window import MainWindowFluent
         
         # 设置主题
         setTheme(Theme.LIGHT)  # 可选: Theme.DARK, Theme.AUTO

@@ -381,6 +381,24 @@ class HomeworkQuestionParser:
                     question_info['title'] = fallback_text
                 else:
                     return None
+
+            question_info['content_images'] = (
+                question_info.get('content_images')
+                or question_info.get('title_images', [])
+                or question_info.get('contentImages', [])
+            )
+            question_info['option_images'] = (
+                question_info.get('option_images')
+                or question_info.get('optionImages', [])
+            )
+            question_info['explanation_images'] = (
+                question_info.get('explanation_images')
+                or question_info.get('analysisImages', [])
+            )
+            question_info['total_score'] = (
+                question_info.get('total_score')
+                or question_info.get('totalScore', '')
+            )
             
             return question_info
             
