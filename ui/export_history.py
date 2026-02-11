@@ -263,6 +263,11 @@ class ExportHistoryFluent(QWidget):
             # 打开文件按钮 - 使用TransparentToolButton自动适配主题
             open_btn = TransparentToolButton(FIF.FOLDER, btn_widget)
             open_btn.setFixedSize(32, 32)
+            open_btn_font = open_btn.font()
+            if open_btn_font.pointSize() <= 0:
+                base_point_size = self.font().pointSize()
+                open_btn_font.setPointSize(base_point_size if base_point_size > 0 else 9)
+                open_btn.setFont(open_btn_font)
             open_btn.setEnabled(file_exists)
             open_btn.clicked.connect(lambda checked, r=record: self._open_file_location(r))
             btn_layout.addWidget(open_btn)
@@ -270,6 +275,11 @@ class ExportHistoryFluent(QWidget):
             # 删除记录按钮
             del_btn = TransparentToolButton(FIF.DELETE, btn_widget)
             del_btn.setFixedSize(32, 32)
+            del_btn_font = del_btn.font()
+            if del_btn_font.pointSize() <= 0:
+                base_point_size = self.font().pointSize()
+                del_btn_font.setPointSize(base_point_size if base_point_size > 0 else 9)
+                del_btn.setFont(del_btn_font)
             del_btn.clicked.connect(lambda checked, r=record: self._delete_record(r))
             btn_layout.addWidget(del_btn)
             

@@ -220,6 +220,11 @@ class HomeworkListFluent(QWidget):
         
         # 刷新按钮
         self.refresh_btn = ToolButton(FIF.SYNC, self)
+        refresh_btn_font = self.refresh_btn.font()
+        if refresh_btn_font.pointSize() <= 0:
+            base_point_size = self.font().pointSize()
+            refresh_btn_font.setPointSize(base_point_size if base_point_size > 0 else 9)
+            self.refresh_btn.setFont(refresh_btn_font)
         self.refresh_btn.clicked.connect(self._on_refresh)
         toolbar_layout.addWidget(self.refresh_btn)
         

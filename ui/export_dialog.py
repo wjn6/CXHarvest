@@ -167,6 +167,11 @@ class ExportDialog(QDialog):
         # 关闭按钮
         close_btn = TransparentToolButton(FIF.CLOSE, title_bar)
         close_btn.setFixedSize(32, 32)
+        close_btn_font = close_btn.font()
+        if close_btn_font.pointSize() <= 0:
+            base_point_size = self.font().pointSize()
+            close_btn_font.setPointSize(base_point_size if base_point_size > 0 else 9)
+            close_btn.setFont(close_btn_font)
         close_btn.clicked.connect(self.reject)
         title_layout.addWidget(close_btn)
         

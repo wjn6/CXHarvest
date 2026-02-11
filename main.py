@@ -40,7 +40,23 @@ def main():
         app.setApplicationName(APP_NAME)
         app.setApplicationVersion(__version__)
 
-        from qfluentwidgets import setTheme, Theme
+        from qfluentwidgets import setTheme, Theme, FluentWindow
+
+        qt_binding = None
+        for cls in FluentWindow.mro():
+            module_name = getattr(cls, '__module__', '')
+            if module_name.startswith('PySide6'):
+                qt_binding = 'PySide6'
+                break
+            if module_name.startswith('PyQt'):
+                qt_binding = module_name.split('.', 1)[0]
+                break
+        if qt_binding and qt_binding != 'PySide6':
+            app_logger.error(
+                f"检测到 qfluentwidgets 使用 {qt_binding}，但当前项目使用 PySide6。"
+                "请使用项目 .venv 运行，或安装 PySide6-Fluent-Widgets 并避免 PyQt 版 qfluentwidgets。"
+            )
+            sys.exit(1)
         
         from ui.main_window import MainWindowFluent
         

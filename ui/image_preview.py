@@ -6,9 +6,9 @@
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDialog, QFrame, QToolButton
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QDialog, QFrame, QToolButton, QStyle
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QEvent
 from PySide6.QtGui import QPixmap, QCursor, QTransform
 
 from qfluentwidgets import (
@@ -63,6 +63,10 @@ class ImagePreviewDialog(QDialog):
         self.original_pixmap = pixmap.copy()
         self._cached_rotated = None  # 缓存旋转后的图片
         self._cache_angle = None
+
+        self._title_bar = None
+        self._title_label = None
+        self._title_max_btn = None
         
         self.current_scale = 1.0
         self.min_scale = 0.1
@@ -87,6 +91,8 @@ class ImagePreviewDialog(QDialog):
             self.current_scale = min(scale_w, scale_h)
         
         self._init_ui()
+        self.scroll_area.viewport().installEventFilter(self)
+        self.img_label.installEventFilter(self)
         self._update_image()
         
         # 设置窗口大小
@@ -102,6 +108,8 @@ class ImagePreviewDialog(QDialog):
         btn.setFixedSize(32, 32)
         btn.setToolTip(tooltip)
         btn.setAutoRaise(True)
+        btn.setCursor(QCursor(Qt.PointingHandCursor))
+        btn.setFocusPolicy(Qt.NoFocus)
         return btn
     
     def _init_ui(self):
@@ -116,9 +124,10 @@ class ImagePreviewDialog(QDialog):
         # ===== 顶部工具栏 =====
         toolbar_widget = QWidget()
         toolbar_widget.setObjectName("toolbar")
+        toolbar_widget.setFixedHeight(44)
         toolbar = QHBoxLayout(toolbar_widget)
-        toolbar.setContentsMargins(16, 10, 16, 10)
-        toolbar.setSpacing(8)
+        toolbar.setContentsMargins(12, 6, 12, 6)
+        toolbar.setSpacing(6)
         
         # 状态信息
         self.scale_label = BodyLabel(self._get_status_text(), self)
@@ -133,7 +142,8 @@ class ImagePreviewDialog(QDialog):
         toolbar.addWidget(zoom_out_btn)
         
         self.zoom_label = BodyLabel(f"{int(self.current_scale * 100)}%", self)
-        self.zoom_label.setFixedWidth(45)
+        self.zoom_label.setFixedWidth(56)
+        self.zoom_label.setFixedHeight(24)
         self.zoom_label.setAlignment(Qt.AlignCenter)
         self.zoom_label.setObjectName("zoomLabel")
         toolbar.addWidget(self.zoom_label)
@@ -163,14 +173,6 @@ class ImagePreviewDialog(QDialog):
         copy_btn.clicked.connect(self._copy_image)
         toolbar.addWidget(copy_btn)
         
-        # 分隔
-        self._add_separator(toolbar)
-        
-        # 关闭按钮
-        close_btn = self._create_tool_btn(FIF.CLOSE, "关闭 (ESC)")
-        close_btn.clicked.connect(self.close)
-        toolbar.addWidget(close_btn)
-        
         main_layout.addWidget(toolbar_widget)
         
         # ===== 图片区域 =====
@@ -182,7 +184,7 @@ class ImagePreviewDialog(QDialog):
         self.img_container.setObjectName("imageContainer")
         container_layout = QVBoxLayout(self.img_container)
         container_layout.setAlignment(Qt.AlignCenter)
-        container_layout.setContentsMargins(20, 20, 20, 20)
+        container_layout.setContentsMargins(12, 12, 12, 12)
         
         self.img_label = QLabel(self.img_container)
         self.img_label.setAlignment(Qt.AlignCenter)
@@ -196,9 +198,9 @@ class ImagePreviewDialog(QDialog):
         hint_widget = QWidget()
         hint_widget.setObjectName("hintBar")
         hint_layout = QHBoxLayout(hint_widget)
-        hint_layout.setContentsMargins(16, 8, 16, 8)
+        hint_layout.setContentsMargins(12, 6, 12, 6)
         
-        hint_label = BodyLabel("滚轮缩放 · 拖动平移 · R/L旋转 · 双击复制 · ESC关闭", self)
+        hint_label = BodyLabel("滚轮缩放 · 拖动平移 · R/L旋转 · 图片双击复制 · 标题双击最大化/还原 · ESC关闭", self)
         hint_label.setObjectName("hintLabel")
         hint_layout.addWidget(hint_label)
         
@@ -222,17 +224,35 @@ class ImagePreviewDialog(QDialog):
         title_bar.setObjectName("titleBar")
         
         title_layout = QHBoxLayout(title_bar)
-        title_layout.setContentsMargins(16, 0, 8, 0)
-        title_layout.setSpacing(12)
+        title_layout.setContentsMargins(12, 0, 8, 0)
+        title_layout.setSpacing(8)
         
         # 图标和标题
         title_label = StrongBodyLabel("🖼️ 图片预览", title_bar)
         title_layout.addWidget(title_label)
+
+        self._title_bar = title_bar
+        self._title_label = title_label
+        title_bar.installEventFilter(self)
+        title_label.installEventFilter(self)
         
         title_layout.addStretch()
+
+        # 最大化/还原按钮
+        max_btn = QToolButton(self)
+        max_btn.setIcon(self.style().standardIcon(QStyle.SP_TitleBarMaxButton))
+        max_btn.setIconSize(QSize(16, 16))
+        max_btn.setFixedSize(32, 32)
+        max_btn.setToolTip("最大化")
+        max_btn.setAutoRaise(True)
+        max_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        max_btn.setFocusPolicy(Qt.NoFocus)
+        max_btn.clicked.connect(self._toggle_maximize)
+        title_layout.addWidget(max_btn)
+        self._title_max_btn = max_btn
         
         # 关闭按钮
-        close_btn = self._create_tool_btn(FIF.CLOSE, "关闭")
+        close_btn = self._create_tool_btn(FIF.CLOSE, "关闭 (ESC)")
         close_btn.clicked.connect(self.close)
         title_layout.addWidget(close_btn)
         
@@ -253,6 +273,7 @@ class ImagePreviewDialog(QDialog):
             self.setStyleSheet("""
                 QDialog {
                     background-color: #1a1a1a;
+                    border: 1px solid #333333;
                 }
                 #titleBar {
                     background-color: #1f1f1f;
@@ -262,13 +283,20 @@ class ImagePreviewDialog(QDialog):
                     background-color: #2d2d2d;
                     border-bottom: 1px solid #3d3d3d;
                 }
-                #statusLabel, #hintLabel, #sizeLabel {
+                #statusLabel {
+                    color: #e6e6e6;
+                    font-size: 12px;
+                }
+                #hintLabel, #sizeLabel {
                     color: #aaaaaa;
                     font-size: 12px;
                 }
                 #zoomLabel {
                     color: #ffffff;
                     font-size: 12px;
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 6px;
                 }
                 #separator {
                     background-color: #4d4d4d;
@@ -320,6 +348,7 @@ class ImagePreviewDialog(QDialog):
             self.setStyleSheet("""
                 QDialog {
                     background-color: #f5f5f5;
+                    border: 1px solid #d9d9d9;
                 }
                 #titleBar {
                     background-color: #f3f3f3;
@@ -329,13 +358,20 @@ class ImagePreviewDialog(QDialog):
                     background-color: #ffffff;
                     border-bottom: 1px solid #e0e0e0;
                 }
-                #statusLabel, #hintLabel, #sizeLabel {
+                #statusLabel {
+                    color: #333333;
+                    font-size: 12px;
+                }
+                #hintLabel, #sizeLabel {
                     color: #666666;
                     font-size: 12px;
                 }
                 #zoomLabel {
                     color: #333333;
                     font-size: 12px;
+                    background-color: rgba(0, 0, 0, 0.04);
+                    border: 1px solid rgba(0, 0, 0, 0.08);
+                    border-radius: 6px;
                 }
                 #separator {
                     background-color: #d0d0d0;
@@ -412,6 +448,24 @@ class ImagePreviewDialog(QDialog):
         """更新标签显示"""
         self.zoom_label.setText(f"{int(self.current_scale * 100)}%")
         self.scale_label.setText(self._get_status_text())
+
+    def _toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+        self._update_title_bar_buttons()
+
+    def _update_title_bar_buttons(self):
+        if not self._title_max_btn:
+            return
+
+        if self.isMaximized():
+            self._title_max_btn.setIcon(self.style().standardIcon(QStyle.SP_TitleBarNormalButton))
+            self._title_max_btn.setToolTip("还原")
+        else:
+            self._title_max_btn.setIcon(self.style().standardIcon(QStyle.SP_TitleBarMaxButton))
+            self._title_max_btn.setToolTip("最大化")
     
     def _zoom(self, delta):
         """缩放图片"""
@@ -452,8 +506,43 @@ class ImagePreviewDialog(QDialog):
         self._zoom(0.1 if delta > 0 else -0.1)
     
     def mouseDoubleClickEvent(self, event):
-        """双击复制图片"""
-        self._copy_image()
+        """双击事件"""
+        if event.position().y() < 40:
+            self._toggle_maximize()
+            event.accept()
+            return
+
+        super().mouseDoubleClickEvent(event)
+
+    def eventFilter(self, watched, event):
+        scroll_area = getattr(self, "scroll_area", None)
+        img_label = getattr(self, "img_label", None)
+        viewport = scroll_area.viewport() if scroll_area is not None else None
+
+        if watched is viewport or watched is img_label:
+            if event.type() == QEvent.Type.Wheel:
+                delta = event.angleDelta().y()
+                self._zoom(0.1 if delta > 0 else -0.1)
+                event.accept()
+                return True
+
+            if event.type() == QEvent.Type.MouseButtonDblClick:
+                self._copy_image()
+                event.accept()
+                return True
+
+        if watched is self._title_bar or watched is self._title_label:
+            if event.type() == QEvent.Type.MouseButtonDblClick:
+                self._toggle_maximize()
+                event.accept()
+                return True
+
+        return super().eventFilter(watched, event)
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._update_title_bar_buttons()
+        super().changeEvent(event)
     
     def keyPressEvent(self, event):
         """快捷键"""
