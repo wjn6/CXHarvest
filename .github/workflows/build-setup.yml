@@ -151,7 +151,7 @@ jobs:
         shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          & $iscc /DMyAppName="$env:APP_NAME" /DMyAppVersion="$env:APP_VERSION" /DMyAppExeName="$env:APP_EXE" installer\setup.iss
+          & $iscc /DMyAppVersion="$env:APP_VERSION" /DMyAppSlug="CXHarvest" installer\setup.iss
 
       - name: Collect setup artifact metadata
         shell: pwsh

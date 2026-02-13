@@ -10,6 +10,10 @@
   #define MyAppExeName "超星收割机.exe"
 #endif
 
+#ifndef MyAppSlug
+  #define MyAppSlug "CXHarvest"
+#endif
+
 [Setup]
 AppId={{A1D6E39E-5F86-4A3D-BB72-9F72D1A8E2B1}
 AppName={#MyAppName}
@@ -19,7 +23,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=.
-OutputBaseFilename={#MyAppName}-setup-v{#MyAppVersion}-win64
+OutputBaseFilename={#MyAppSlug}-setup-v{#MyAppVersion}-win64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
