@@ -35,7 +35,7 @@ jobs:
       - name: Read app metadata
         shell: pwsh
         run: |
-          $json = python -c "import json; from core.version import APP_NAME,__version__; print(json.dumps({'name':APP_NAME,'version':__version__}, ensure_ascii=False))"
+          $json = python -c "import json; from core.version import APP_NAME,__version__; print(json.dumps({'name':APP_NAME,'version':__version__}))"
           $meta = $json | ConvertFrom-Json
           "APP_NAME=$($meta.name)" >> $env:GITHUB_ENV
           "APP_VERSION=$($meta.version)" >> $env:GITHUB_ENV
