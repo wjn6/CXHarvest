@@ -56,6 +56,7 @@ jobs:
         run: |
           @'
           from pathlib import Path
+          import textwrap
           import PyInstaller.__main__
           from core.version import APP_NAME, APP_ICON, __version__
 
@@ -81,37 +82,40 @@ jobs:
           version_text = f"{major}.{minor}.{patch}.{build}"
           version_file = work_dir / "version_info.autogen.txt"
           version_file.write_text(
-              f"""# UTF-8
-VSVersionInfo(
-  ffi=FixedFileInfo(
-    filevers={version_tuple},
-    prodvers={version_tuple},
-    mask=0x3f,
-    flags=0x0,
-    OS=0x40004,
-    fileType=0x1,
-    subtype=0x0,
-    date=(0, 0)
-    ),
-  kids=[
-    StringFileInfo(
-      [
-      StringTable(
-        u'080404b0',
-        [
-        StringStruct(u'CompanyName', u'重庆彭于晏'),
-        StringStruct(u'FileDescription', u'{APP_NAME}'),
-        StringStruct(u'FileVersion', u'{version_text}'),
-        StringStruct(u'InternalName', u'cxharvest'),
-        StringStruct(u'LegalCopyright', u'Copyright (c) 2026 wjn6'),
-        StringStruct(u'OriginalFilename', u'{APP_NAME}.exe'),
-        StringStruct(u'ProductName', u'{APP_NAME}'),
-        StringStruct(u'ProductVersion', u'{version_text}')])
-      ]),
-    VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
-  ]
-)
-""",
+              textwrap.dedent(
+                  f"""\
+                  # UTF-8
+                  VSVersionInfo(
+                    ffi=FixedFileInfo(
+                      filevers={version_tuple},
+                      prodvers={version_tuple},
+                      mask=0x3f,
+                      flags=0x0,
+                      OS=0x40004,
+                      fileType=0x1,
+                      subtype=0x0,
+                      date=(0, 0)
+                      ),
+                    kids=[
+                      StringFileInfo(
+                        [
+                        StringTable(
+                          u'080404b0',
+                          [
+                          StringStruct(u'CompanyName', u'重庆彭于晏'),
+                          StringStruct(u'FileDescription', u'{APP_NAME}'),
+                          StringStruct(u'FileVersion', u'{version_text}'),
+                          StringStruct(u'InternalName', u'cxharvest'),
+                          StringStruct(u'LegalCopyright', u'Copyright (c) 2026 wjn6'),
+                          StringStruct(u'OriginalFilename', u'{APP_NAME}.exe'),
+                          StringStruct(u'ProductName', u'{APP_NAME}'),
+                          StringStruct(u'ProductVersion', u'{version_text}')])
+                        ]),
+                      VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
+                    ]
+                  )
+                  """
+              ),
               encoding="utf-8",
           )
 
