@@ -636,15 +636,41 @@ class UpdateCheckWorker(QThread):
                 # 比较版本号
                 has_update = self._compare_versions(latest_version, __version__) > 0
                 
-                # 获取下载链接
+                # 获取下载链接（优先选择安装包 EXE，其次 ZIP）
                 download_url = None
                 download_size = 0
+                download_name = ""
                 assets = data.get("assets", [])
+
+                def _asset_priority(asset: dict) -> int:
+                    name = str(asset.get("name", "")).lower()
+                    # 忽略签名/校验等附属文件
+                    if name.endswith(".sha256") or name.endswith(".sig"):
+                        return 0
+                    # 首选安装包 exe
+                    if name.endswith(".exe") and "setup" in name and "cxharvest" in name:
+                        return 100
+                    if name.endswith(".exe") and "setup" in name:
+                        return 90
+                    if name.endswith(".exe"):
+                        return 80
+                    # 其次 zip
+                    if name.endswith(".zip"):
+                        return 60
+                    return 1
+
+                best_asset = None
+                best_score = -1
                 for asset in assets:
-                    if asset.get("name", "").endswith(".zip"):
-                        download_url = asset.get("browser_download_url")
-                        download_size = asset.get("size", 0)
-                        break
+                    score = _asset_priority(asset)
+                    if score > best_score:
+                        best_score = score
+                        best_asset = asset
+
+                if best_asset and best_score > 1:
+                    download_url = best_asset.get("browser_download_url")
+                    download_size = best_asset.get("size", 0)
+                    download_name = best_asset.get("name", "")
                 
                 self.check_finished.emit({
                     "has_update": has_update,
@@ -652,6 +678,7 @@ class UpdateCheckWorker(QThread):
                     "current_version": __version__,
                     "release_url": data.get("html_url", GITHUB_URL),
                     "download_url": download_url,
+                    "download_name": download_name,
                     "download_size": download_size,
                     "changelog": data.get("body", "暂无更新说明"),
                     "published_at": data.get("published_at", ""),
@@ -791,18 +818,31 @@ class UpdateInfoDialog(MessageBoxBase):
     def _download_to_local(self):
         """下载到本地"""
         from PySide6.QtWidgets import QFileDialog
+        from pathlib import Path
         
-        # 选择保存位置
-        default_name = f"超星收割机_v{self.update_info['version']}.zip"
+        # 选择保存位置（优先使用 release 资产原始文件名）
+        default_name = self.update_info.get("download_name") or f"CXHarvest-setup-v{self.update_info['version']}-win64.exe"
+        suffix = Path(default_name).suffix.lower()
+        if suffix == ".exe":
+            file_filter = "可执行文件 (*.exe);;所有文件 (*.*)"
+        elif suffix == ".zip":
+            file_filter = "ZIP 文件 (*.zip);;所有文件 (*.*)"
+        else:
+            file_filter = "所有文件 (*.*)"
+
         save_path, _ = QFileDialog.getSaveFileName(
             self,
             "保存更新包",
             default_name,
-            "ZIP 文件 (*.zip)"
+            file_filter
         )
         
         if not save_path:
             return
+
+        # 用户未输入后缀时，补全默认后缀
+        if Path(save_path).suffix == "" and suffix:
+            save_path += suffix
         
         # 显示进度条
         self.progress_bar.setValue(0)
