@@ -168,8 +168,13 @@ python main.py
 ### 构建发布版
 
 ```bash
-pyinstaller --windowed --onefile --name "超星收割机" main.py
+pyinstaller --onedir --noconsole --name "超星收割机" main.py \
+  --add-data "README.md;." \
+  --add-data "assets;assets" \
+  --collect-all qfluentwidgets
 ```
+
+> 说明: GitHub Actions 已支持自动生成 `Setup.exe`，本地命令用于手动调试构建。
 
 ---
 

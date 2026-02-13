@@ -53,3 +53,7 @@ desktop.ini
 htmlcov/
 *.tmp
 *.bak
+
+# ========== 安装包产物 ==========
+installer/*.exe
+installer/*.sha256
