@@ -5,9 +5,6 @@
 复用 HomeworkManager 的参数提取和URL构建逻辑，仅做轻量计数
 """
 
-import re
-from typing import Optional, Any
-
 from bs4 import BeautifulSoup
 
 from .common import AppConstants, safe_json_load, safe_json_save, PathManager

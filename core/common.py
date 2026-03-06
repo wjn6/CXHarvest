@@ -108,19 +108,8 @@ class PathManager:
         return resolved
 
 
-# PySide6 核心导入
-
-# 网络和解析相关
+# 网络相关（仅 setup_session 使用）
 import requests
-from bs4 import BeautifulSoup
-import urllib3
-
-# 加密相关
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
-
-# 图像处理
-from PIL import Image
 
 # 常量定义
 class AppConstants:

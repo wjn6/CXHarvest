@@ -24,7 +24,7 @@ from bs4 import BeautifulSoup
 # =============================================================================
 from .common import (
     AppConstants, CourseInfo, NetworkError, ParseError,
-    safe_json_load, safe_json_save, setup_session, PathManager
+    safe_json_load, safe_json_save, PathManager
 )
 from .login_manager import LoginManager
 from .session_manager import SessionManagerMixin
@@ -125,11 +125,20 @@ class CourseManager(SessionManagerMixin):
             network_logger.network_request("POST", api_url, response.status_code)
 
             if response.status_code == 200:
-                courses = self.parse_course_data(response.text)
+                # 检测是否被重定向到登录页（超星可能返回200但内容是登录页）
+                resp_text = response.text
+                if '<title>用户登录</title>' in resp_text or 'passport2.chaoxing.com/login' in resp_text:
+                    app_logger.warning("课程API返回了登录页面，session已失效")
+                    self.invalidate_session()
+                    from .common import LoginError
+                    raise LoginError("登录已过期，请重新登录")
+                
+                courses = self.parse_course_data(resp_text)
                 self.courses = courses
                 
-                # 保存到缓存
-                self.save_courses_to_cache(courses)
+                # 仅在成功获取到课程时保存缓存
+                if courses:
+                    self.save_courses_to_cache(courses)
                 
                 app_logger.success("成功获取课程数据", 
                                  {"course_count": len(courses)})

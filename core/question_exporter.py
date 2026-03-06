@@ -25,6 +25,17 @@ from core.enterprise_logger import app_logger
 from core.version import __version__, APP_NAME
 from core.common import get_question_field
 
+def _escape_xml(text: str) -> str:
+    """转义 XML/HTML 特殊字符（供 reportlab Paragraph 使用）"""
+    if not text:
+        return ""
+    return (str(text)
+            .replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+            .replace('"', '&quot;')
+            .replace("'", '&#39;'))
+
 
 class ExportOptions:
     """导出选项配置类"""
@@ -194,438 +205,37 @@ class QuestionExporter:
     
     # ==================== HTML 导出 ====================
     
-    def export_html(self, output_path: str) -> bool:
+    def export_html(self, output_path: str, template_id: str = 'default') -> bool:
         """
         导出为HTML格式
         
         Args:
             output_path: 输出文件路径
+            template_id: HTML 模板 ID
             
         Returns:
             是否成功
         """
         try:
-            html_content = self._generate_html()
+            from core.html_templates import get_template_registry
+            template = get_template_registry().get(template_id)
+            html_content = self._generate_html(template)
             
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
             
-            app_logger.info(f"HTML导出成功: {output_path}")
+            app_logger.info(f"HTML导出成功: {output_path} (模板: {template.name})")
             return True
         except Exception as e:
             app_logger.error(f"HTML导出失败: {e}")
             return False
     
-    def _generate_html(self) -> str:
-        """生成HTML内容"""
-        stats = self.get_statistics()
-        
-        # HTML头部 - 简洁青色主题
-        html = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{self.homework_title}</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
-            background: #f5f5f5;
-            min-height: 100vh;
-            padding: 20px;
-        }}
-        .container {{
-            max-width: 900px;
-            margin: 0 auto;
-            background: #fff;
-            border-radius: 16px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-            overflow: hidden;
-        }}
-        .header {{
-            background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%);
-            color: white;
-            padding: 32px;
-            text-align: center;
-        }}
-        .header h1 {{
-            font-size: 28px;
-            margin-bottom: 8px;
-        }}
-        .header .meta {{
-            opacity: 0.9;
-            font-size: 14px;
-        }}
-        .stats-bar {{
-            display: flex;
-            justify-content: space-around;
-            padding: 24px;
-            background: #fff;
-            border-bottom: 1px solid #e5e7eb;
-        }}
-        .stat-item {{
-            text-align: center;
-        }}
-        .stat-value {{
-            font-size: 28px;
-            font-weight: bold;
-            color: #1e293b;
-        }}
-        .stat-label {{
-            font-size: 13px;
-            color: #64748b;
-            margin-top: 4px;
-        }}
-        .stat-item.correct .stat-value {{ color: #16a34a; }}
-        .stat-item.wrong .stat-value {{ color: #dc2626; }}
-        .filter-bar {{
-            display: flex;
-            gap: 8px;
-            padding: 16px 24px;
-            background: #f8fafc;
-            border-bottom: 1px solid #e5e7eb;
-        }}
-        .filter-btn {{
-            padding: 8px 16px;
-            border: none;
-            border-radius: 6px;
-            font-size: 14px;
-            cursor: pointer;
-            transition: all 0.2s;
-            background: #e5e7eb;
-            color: #64748b;
-        }}
-        .filter-btn.active {{
-            background: #0891b2;
-            color: white;
-        }}
-        .filter-btn:hover {{
-            opacity: 0.9;
-        }}
-        .content {{
-            padding: 24px;
-        }}
-        .question-card {{
-            background: #fff;
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 16px;
-        }}
-        .question-card.hidden {{
-            display: none;
-        }}
-        .question-header {{
-            display: flex;
-            align-items: center;
-            margin-bottom: 12px;
-            flex-wrap: wrap;
-            gap: 8px;
-        }}
-        .question-number {{
-            background: #0891b2;
-            color: white;
-            padding: 4px 12px;
-            border-radius: 6px;
-            font-size: 13px;
-            font-weight: 500;
-        }}
-        .question-type {{
-            background: #f1f5f9;
-            color: #64748b;
-            padding: 4px 10px;
-            border-radius: 6px;
-            font-size: 12px;
-        }}
-        .question-status {{
-            margin-left: auto;
-            padding: 4px 10px;
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: 500;
-        }}
-        .question-status.correct {{
-            background: #dcfce7;
-            color: #16a34a;
-        }}
-        .question-status.wrong {{
-            background: #fee2e2;
-            color: #dc2626;
-        }}
-        .question-content {{
-            font-size: 15px;
-            line-height: 1.7;
-            color: #1e293b;
-            margin-bottom: 16px;
-        }}
-        .options-list {{
-            list-style: none;
-            margin-bottom: 16px;
-        }}
-        .options-list li {{
-            padding: 10px 14px;
-            margin-bottom: 8px;
-            background: #f8fafc;
-            border-radius: 8px;
-            font-size: 14px;
-            color: #475569;
-        }}
-        .answer-section {{
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-top: 12px;
-            font-size: 14px;
-        }}
-        .answer-section.my-answer {{
-            background: #ecfeff;
-            border-left: 4px solid #0891b2;
-        }}
-        .answer-section.correct-answer {{
-            background: #f0fdf4;
-            border-left: 4px solid #22c55e;
-        }}
-        .answer-section.analysis {{
-            background: #fef3c7;
-            border-left: 4px solid #f59e0b;
-        }}
-        .answer-label {{
-            font-weight: 600;
-            margin-right: 8px;
-        }}
-        .score-info {{
-            margin-top: 12px;
-            font-size: 13px;
-            color: #64748b;
-        }}
-        .question-image {{
-            max-width: 100%;
-            height: auto;
-            border-radius: 8px;
-            margin: 10px 0;
-        }}
-        .footer {{
-            text-align: center;
-            padding: 20px;
-            background: #f8fafc;
-            color: #94a3b8;
-            font-size: 12px;
-        }}
-        @media print {{
-            body {{ background: white; padding: 0; }}
-            .container {{ box-shadow: none; }}
-            .question-card {{ break-inside: avoid; }}
-            .filter-bar {{ display: none; }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>{self.homework_title}</h1>
-"""
-        
-        if self.options.include_export_time:
-            html += f'            <div class="meta">导出时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>\n'
-        
-        html += """        </div>
-"""
-        
-        # 统计信息
-        if self.options.include_statistics:
-            html += f"""        <div class="stats-bar">
-            <div class="stat-item">
-                <div class="stat-value">{stats['total_questions']}</div>
-                <div class="stat-label">总题数</div>
-            </div>
-            <div class="stat-item correct">
-                <div class="stat-value">{stats['correct_count']}</div>
-                <div class="stat-label">正确</div>
-            </div>
-            <div class="stat-item wrong">
-                <div class="stat-value">{stats['wrong_count']}</div>
-                <div class="stat-label">错误</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-value">{stats['accuracy']}</div>
-                <div class="stat-label">正确率</div>
-            </div>
-        </div>
-"""
-        
-        # 过滤按钮栏
-        html += """        <div class="filter-bar">
-            <button class="filter-btn active" onclick="filterQuestions('all')">全部题目</button>
-            <button class="filter-btn" onclick="filterQuestions('correct')">答对题目</button>
-            <button class="filter-btn" onclick="filterQuestions('wrong')">答错题目</button>
-        </div>
-        
-        <div class="content">
-"""
-        
-        # 题目列表
-        for i, q in enumerate(self.questions, 1):
-            q_type = self._get_question_type(q)
-            content = self._get_question_content(q)
-            options = self._get_options(q)
-            is_correct = self._is_correct(q)
-            
-            data_correct = "true" if is_correct else "false"
-            html += f'            <div class="question-card" data-correct="{data_correct}">\n'
-            html += '                <div class="question-header">\n'
-            
-            if self.options.include_question_number:
-                html += f'                    <span class="question-number">第 {i} 题</span>\n'
-            
-            if self.options.include_question_type:
-                html += f'                    <span class="question-type">{q_type}</span>\n'
-            
-            if self.options.show_correct_status and is_correct is not None:
-                status_class = "correct" if is_correct else "wrong"
-                status_text = "✓ 正确" if is_correct else "✗ 错误"
-                html += f'                    <span class="question-status {status_class}">{status_text}</span>\n'
-            
-            html += '                </div>\n'
-            html += f'                <div class="question-content">{self._escape_html(content)}</div>\n'
-            
-            # 题目图片
-            content_images = get_question_field(q, 'content_images', [])
-            if content_images:
-                html += f'                {self._render_images_html(content_images)}'
-            
-            # 选项（包含图片）
-            raw_options = q.get('options', [])
-            if raw_options:
-                html += '                <ul class="options-list">\n'
-                for opt in raw_options:
-                    if isinstance(opt, dict):
-                        label = opt.get('label', '')
-                        content = opt.get('content', '')
-                        opt_images = opt.get('images', [])
-                        
-                        # 如果有图片，清理占位符文本
-                        if opt_images:
-                            content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
-                        
-                        html += f'                    <li>{self._escape_html(f"{label}. {content}")}'
-                        if opt_images:
-                            html += self._render_images_html(opt_images)
-                        html += '</li>\n'
-                    else:
-                        html += f'                    <li>{self._escape_html(str(opt))}</li>\n'
-                html += '                </ul>\n'
-            
-            # 我的答案
-            if self.options.include_my_answer:
-                my_answer = self._get_my_answer(q)
-                my_answer_images = get_question_field(q, 'my_answer_images', [])
-                if my_answer or my_answer_images:
-                    html += f'                <div class="answer-section my-answer"><span class="answer-label">我的答案:</span>'
-                    if my_answer and '[图片' not in my_answer:
-                        html += self._escape_html(my_answer)
-                    html += '</div>\n'
-                    if my_answer_images:
-                        html += f'                {self._render_images_html(my_answer_images)}'
-            
-            # 正确答案
-            if self.options.include_correct_answer:
-                correct_answer = self._get_question_answer(q)
-                correct_answer_images = get_question_field(q, 'correct_answer_images', [])
-                if correct_answer or correct_answer_images:
-                    html += f'                <div class="answer-section correct-answer"><span class="answer-label">正确答案:</span>'
-                    if correct_answer and '[图片' not in correct_answer:
-                        html += self._escape_html(correct_answer)
-                    html += '</div>\n'
-                    if correct_answer_images:
-                        html += f'                {self._render_images_html(correct_answer_images)}'
-            
-            # 解析
-            if self.options.include_analysis:
-                analysis = self._get_analysis(q)
-                if analysis:
-                    html += f'                <div class="answer-section analysis"><span class="answer-label">解析:</span>{self._escape_html(analysis)}</div>\n'
-            
-            # 得分
-            if self.options.include_score:
-                score = get_question_field(q, 'score', '')
-                if score:
-                    html += f'                <div class="score-info">得分: {score}</div>\n'
-            
-            html += '            </div>\n'
-            
-            # 分割线
-            if self.options.include_separator and i < len(self.questions):
-                html += '            <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 20px 0;">\n'
-        
-        html += f"""        </div>
-        <div class="footer">
-            Generated by {APP_NAME} v{__version__}
-        </div>
-    </div>
-    
-    <script>
-        function filterQuestions(type) {{
-            const cards = document.querySelectorAll('.question-card');
-            const btns = document.querySelectorAll('.filter-btn');
-            
-            btns.forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
-            
-            cards.forEach(card => {{
-                const isCorrect = card.dataset.correct === 'true';
-                if (type === 'all') {{
-                    card.classList.remove('hidden');
-                }} else if (type === 'correct') {{
-                    card.classList.toggle('hidden', !isCorrect);
-                }} else {{
-                    card.classList.toggle('hidden', isCorrect);
-                }}
-            }});
-        }}
-    </script>
-</body>
-</html>
-"""
-        return html
-    
-    def _escape_html(self, text: str) -> str:
-        """转义HTML特殊字符"""
-        if not text:
-            return ""
-        return (str(text)
-                .replace('&', '&amp;')
-                .replace('<', '&lt;')
-                .replace('>', '&gt;')
-                .replace('"', '&quot;')
-                .replace("'", '&#39;'))
-    
-    def _render_images_html(self, images: List) -> str:
-        """渲染图片为HTML，保持原始尺寸"""
-        if not images or not self.options.include_images:
-            return ""
-        
-        html = ""
-        for img in images:
-            if isinstance(img, dict):
-                # 优先使用 data（base64），因为原始URL可能需要认证
-                src = img.get('data') or img.get('src', '')
-                alt = img.get('alt', '图片')
-                # 使用原始尺寸，如果有的话
-                width = img.get('width', 0)
-                height = img.get('height', 0)
-            else:
-                src = str(img)
-                alt = '图片'
-                width = height = 0
-            
-            if src:
-                safe_alt = self._escape_html(alt)
-                if width > 0 and height > 0:
-                    html += f'<img class="question-image" src="{src}" alt="{safe_alt}" width="{width}" height="{height}" style="max-width:100%;" />\n'
-                else:
-                    html += f'<img class="question-image" src="{src}" alt="{safe_alt}" style="max-width:600px;" />\n'
-        
-        return html
+    def _generate_html(self, template=None) -> str:
+        """生成HTML内容——委托给模板的 render_html"""
+        if template is None:
+            from core.html_templates import get_template_registry
+            template = get_template_registry().get('default')
+        return template.render_html(self)
     
     def _get_image_bytes(self, img_data: dict) -> Optional[bytes]:
         """从图片数据获取字节流"""
@@ -904,28 +514,54 @@ class QuestionExporter:
             
             md += f"{content}\n\n"
             
+            # 题目图片
+            content_images = get_question_field(q, 'content_images', [])
+            if content_images and self.options.include_images:
+                for img in content_images:
+                    md += self._render_image_markdown(img)
+            
             # 正确/错误状态
             if self.options.show_correct_status and is_correct is not None:
                 status = "✅ 正确" if is_correct else "❌ 错误"
                 md += f"**状态**: {status}\n\n"
             
             # 选项
-            if options:
-                for opt in options:
-                    md += f"- {opt}\n"
+            raw_options = q.get('options', [])
+            if raw_options:
+                for opt in raw_options:
+                    if isinstance(opt, dict):
+                        label = opt.get('label', '')
+                        opt_content = opt.get('content', '')
+                        opt_images = opt.get('images', [])
+                        if opt_images:
+                            opt_content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', opt_content).strip()
+                        md += f"- {label}. {opt_content}\n"
+                        if opt_images and self.options.include_images:
+                            for img in opt_images:
+                                md += f"  {self._render_image_markdown(img)}"
+                    else:
+                        md += f"- {opt}\n"
                 md += "\n"
             
             # 我的答案
             if self.options.include_my_answer:
                 my_answer = self._get_my_answer(q)
-                if my_answer:
+                if my_answer and '[图片' not in my_answer:
                     md += f"**我的答案**: {my_answer}\n\n"
+                my_answer_images = get_question_field(q, 'my_answer_images', [])
+                if my_answer_images and self.options.include_images:
+                    for img in my_answer_images:
+                        md += self._render_image_markdown(img)
             
             # 正确答案
             if self.options.include_correct_answer:
                 correct_answer = self._get_question_answer(q)
-                if correct_answer:
+                if correct_answer and '[图片' not in correct_answer:
                     md += f"**正确答案**: {correct_answer}\n\n"
+                correct_answer_images = get_question_field(q, 'correct_answer_images', [])
+                if correct_answer_images and self.options.include_images:
+                    for img in correct_answer_images:
+                        md += self._render_image_markdown(img)
             
             # 解析
             if self.options.include_analysis:
@@ -943,6 +579,18 @@ class QuestionExporter:
                 md += "---\n\n"
         
         return md
+
+    def _render_image_markdown(self, img) -> str:
+        """将图片渲染为 Markdown 格式"""
+        if isinstance(img, dict):
+            src = img.get('data') or img.get('src', '')
+            alt = img.get('alt', '图片')
+        else:
+            src = str(img)
+            alt = '图片'
+        if src:
+            return f"![{alt}]({src})\n\n"
+        return ""
 
     def export_excel(self, output_path: str) -> bool:
         try:
@@ -1109,7 +757,6 @@ class QuestionExporter:
             from docx import Document
             from docx.shared import Inches, Pt, RGBColor
             from docx.enum.text import WD_ALIGN_PARAGRAPH
-            from docx.enum.style import WD_STYLE_TYPE
         except ImportError:
             app_logger.error("Word导出需要安装python-docx库: pip install python-docx")
             return False
@@ -1367,7 +1014,7 @@ class QuestionExporter:
             stats = self.get_statistics()
             
             # 标题
-            story.append(Paragraph(self.homework_title, title_style))
+            story.append(Paragraph(_escape_xml(self.homework_title), title_style))
             story.append(Spacer(1, 12))
             
             # 副标题信息（统计 + 时间）
@@ -1401,7 +1048,7 @@ class QuestionExporter:
                 # 题目标题（题号 + 类型 + 状态）
                 status_mark = ""
                 if self.options.show_correct_status and is_correct is not None:
-                    status_mark = " <font color='green'>✓</font>" if is_correct else " <font color='red'>✗</font>"
+                    status_mark = " <font color='green'>[正确]</font>" if is_correct else " <font color='red'>[错误]</font>"
                 
                 q_header = f"<b>{i}.</b> "
                 if self.options.include_question_type:
@@ -1411,7 +1058,7 @@ class QuestionExporter:
                 story.append(Paragraph(q_header, normal_style))
                 
                 # 题目内容
-                story.append(Paragraph(content, normal_style))
+                story.append(Paragraph(_escape_xml(content), normal_style))
                 
                 # 题目图片
                 content_images = get_question_field(q, 'content_images', [])
@@ -1433,13 +1080,13 @@ class QuestionExporter:
                             if opt_images:
                                 content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
                             
-                            story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;{label}. {content}", normal_style))
+                            story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;{_escape_xml(label)}. {_escape_xml(content)}", normal_style))
                             
                             # 添加选项图片
                             if opt_images:
                                 self._add_images_to_pdf(story, opt_images, max_width=350)
                         else:
-                            story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;{opt}", normal_style))
+                            story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;{_escape_xml(str(opt))}", normal_style))
                     story.append(Spacer(1, 4))
                 
                 # 答案（合并到一行）
@@ -1450,7 +1097,7 @@ class QuestionExporter:
                     if my_answer and '[图片' in my_answer:
                         my_answer = ''
                     if my_answer:
-                        ans_parts.append(f"<font color='#0066CC'>我的答案: {my_answer}</font>")
+                        ans_parts.append(f"<font color='#0066CC'>我的答案: {_escape_xml(my_answer)}</font>")
                 
                 if self.options.include_correct_answer:
                     correct_answer = self._get_question_answer(q)
@@ -1458,12 +1105,12 @@ class QuestionExporter:
                     if correct_answer and '[图片' in correct_answer:
                         correct_answer = ''
                     if correct_answer:
-                        ans_parts.append(f"<font color='#008800'>正确答案: {correct_answer}</font>")
+                        ans_parts.append(f"<font color='#008800'>正确答案: {_escape_xml(correct_answer)}</font>")
                 
                 if self.options.include_score:
                     score_val = get_question_field(q, 'score', '')
                     if score_val:
-                        ans_parts.append(f"<font color='grey'>得分: {score_val}</font>")
+                        ans_parts.append(f"<font color='grey'>得分: {_escape_xml(str(score_val))}</font>")
                 
                 if ans_parts:
                     story.append(Paragraph("&nbsp;&nbsp;".join(ans_parts), normal_style))
@@ -1485,7 +1132,7 @@ class QuestionExporter:
                 if self.options.include_analysis:
                     analysis = self._get_analysis(q)
                     if analysis:
-                        story.append(Paragraph(f"<i><font color='#996633'>解析: {analysis}</font></i>", normal_style))
+                        story.append(Paragraph(f"<i><font color='#996633'>解析: {_escape_xml(analysis)}</font></i>", normal_style))
                 
                 # 分割线或间距
                 if self.options.include_separator and i < len(self.questions):

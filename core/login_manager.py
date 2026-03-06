@@ -25,7 +25,6 @@ from urllib3.util.retry import Retry
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from PIL import Image
-from io import BytesIO
 
 # =============================================================================
 # 项目内部导入

@@ -20,7 +20,7 @@ from qfluentwidgets import (
     CardWidget, BodyLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
     PrimaryPushButton, PushButton, TransparentPushButton, TransparentToolButton,
     CheckBox, ProgressRing, InfoBar, InfoBarPosition, 
-    SmoothScrollArea, LineEdit, isDarkTheme
+    LineEdit, isDarkTheme
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -36,12 +36,13 @@ class ExportWorker(QThread):
     error = Signal(str)
     
     def __init__(self, exporter: QuestionExporter, output_dir: str, 
-                 formats: List[str], base_name: str):
+                 formats: List[str], base_name: str, html_template_id: str = 'default'):
         super().__init__()
         self.exporter = exporter
         self.output_dir = output_dir
         self.formats = formats
         self.base_name = base_name
+        self.html_template_id = html_template_id
         self._cancelled = False
     
     def cancel(self):
@@ -74,7 +75,10 @@ class ExportWorker(QThread):
                 export_fn = fmt_func.get(fmt)
                 if export_fn:
                     path = os.path.join(self.output_dir, f"{self.base_name}{ext}")
-                    results[fmt] = export_fn(path)
+                    if fmt == 'html':
+                        results[fmt] = export_fn(path, template_id=self.html_template_id)
+                    else:
+                        results[fmt] = export_fn(path)
             
             self.progress.emit("导出完成", 100)
             self.finished.emit(results)
@@ -96,7 +100,7 @@ class ExportDialog(QDialog):
         self._exported_files = []  # 保存导出的文件路径
         
         self.setWindowTitle("导出题目")
-        self.setMinimumSize(700, 680)
+        self.setFixedSize(800, 620)
         self.setModal(True)
         
         # 设置无边框窗口
@@ -119,18 +123,12 @@ class ExportDialog(QDialog):
             self.setStyleSheet("""
                 QDialog { background-color: #2d2d2d; color: #ffffff; }
                 CardWidget { background-color: #2d2d2d; border: none; border-bottom: 1px solid #404040; border-radius: 0px; }
-                SmoothScrollArea { background-color: #2d2d2d; border: none; }
-                SmoothScrollArea > QWidget > QWidget { background-color: #2d2d2d; }
-                QScrollBar:vertical { background-color: #2d2d2d; }
                 QLabel { color: #ffffff; }
             """)
         else:
             self.setStyleSheet("""
                 QDialog { background-color: #ffffff; color: #000000; }
                 CardWidget { background-color: #ffffff; border: none; border-bottom: 1px solid #e8e8e8; border-radius: 0px; }
-                SmoothScrollArea { background-color: #ffffff; border: none; }
-                SmoothScrollArea > QWidget > QWidget { background-color: #ffffff; }
-                QScrollBar:vertical { background-color: #ffffff; }
                 QLabel { color: #000000; }
             """)
     
@@ -208,36 +206,24 @@ class ExportDialog(QDialog):
         # 自定义标题栏
         self._create_title_bar(layout)
         
-        # 主内容区域（带边距）
+        # 主内容区域（无滚动，单页紧凑排列）
         content_widget = QWidget(self)
         content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(24, 16, 24, 24)
-        content_layout.setSpacing(16)
+        content_layout.setContentsMargins(24, 16, 24, 20)
+        content_layout.setSpacing(4)
         
-        # 滚动区域
-        scroll = SmoothScrollArea(self)
-        scroll.setWidgetResizable(True)
+        # 导出格式 + HTML模板
+        self._create_format_card(content_layout)
         
-        scroll_content = QWidget()
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(0, 0, 12, 0)
-        scroll_layout.setSpacing(0)  # 无间距，卡片紧密排列
+        # 内容选项 + 格式选项 合并到一行
+        options_row = QHBoxLayout()
+        options_row.setSpacing(0)
+        self._create_content_options_card(options_row)
+        self._create_format_options_card(options_row)
+        content_layout.addLayout(options_row)
         
-        # 导出格式选择卡片
-        self._create_format_card(scroll_layout)
-        
-        # 内容选项卡片
-        self._create_content_options_card(scroll_layout)
-        
-        # 格式选项卡片
-        self._create_format_options_card(scroll_layout)
-        
-        # 输出路径卡片
-        self._create_output_card(scroll_layout)
-        
-        scroll_layout.addStretch()
-        scroll.setWidget(scroll_content)
-        content_layout.addWidget(scroll, 1)
+        # 输出路径
+        self._create_output_card(content_layout)
         
         # 进度条
         self.progress_container = QFrame(self)
@@ -276,8 +262,8 @@ class ExportDialog(QDialog):
         """创建格式选择卡片"""
         card = CardWidget(self)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(16, 16, 16, 16)
-        card_layout.setSpacing(12)
+        card_layout.setContentsMargins(16, 12, 16, 8)
+        card_layout.setSpacing(8)
         
         # 标题
         title = StrongBodyLabel("选择导出格式", card)
@@ -317,6 +303,9 @@ class ExportDialog(QDialog):
         formats_layout.addStretch()
         card_layout.addLayout(formats_layout)
         
+        # HTML 模板选择区
+        self._create_template_selector(card, card_layout)
+        
         # 全选/取消全选
         select_layout = QHBoxLayout()
         select_all_btn = TransparentPushButton("全选", card)
@@ -336,34 +325,32 @@ class ExportDialog(QDialog):
         """创建内容选项卡片"""
         card = CardWidget(self)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(16, 16, 16, 16)
-        card_layout.setSpacing(12)
+        card_layout.setContentsMargins(16, 12, 16, 12)
+        card_layout.setSpacing(8)
         
-        # 标题
         title = StrongBodyLabel("内容选项", card)
         card_layout.addWidget(title)
         
-        # 使用网格布局，3列2行
         grid = QGridLayout()
-        grid.setSpacing(16)
+        grid.setSpacing(6)
         
-        self.check_my_answer = CheckBox("包含我的答案", card)
+        self.check_my_answer = CheckBox("我的答案", card)
         self.check_my_answer.setChecked(True)
         grid.addWidget(self.check_my_answer, 0, 0)
         
-        self.check_analysis = CheckBox("包含答案解析", card)
-        self.check_analysis.setChecked(True)
-        grid.addWidget(self.check_analysis, 0, 1)
-        
-        self.check_correct_answer = CheckBox("包含正确答案", card)
+        self.check_correct_answer = CheckBox("正确答案", card)
         self.check_correct_answer.setChecked(True)
-        grid.addWidget(self.check_correct_answer, 1, 0)
+        grid.addWidget(self.check_correct_answer, 0, 1)
         
-        self.check_statistics = CheckBox("包含统计信息", card)
+        self.check_analysis = CheckBox("答案解析", card)
+        self.check_analysis.setChecked(True)
+        grid.addWidget(self.check_analysis, 1, 0)
+        
+        self.check_statistics = CheckBox("统计信息", card)
         self.check_statistics.setChecked(True)
         grid.addWidget(self.check_statistics, 1, 1)
         
-        self.check_score = CheckBox("包含得分信息", card)
+        self.check_score = CheckBox("得分信息", card)
         self.check_score.setChecked(True)
         grid.addWidget(self.check_score, 2, 0)
         
@@ -378,30 +365,28 @@ class ExportDialog(QDialog):
         """创建格式选项卡片"""
         card = CardWidget(self)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(16, 16, 16, 16)
-        card_layout.setSpacing(12)
+        card_layout.setContentsMargins(16, 12, 16, 12)
+        card_layout.setSpacing(8)
         
-        # 标题
         title = StrongBodyLabel("格式选项", card)
         card_layout.addWidget(title)
         
-        # 使用网格布局，2行2列
         grid = QGridLayout()
-        grid.setSpacing(16)
+        grid.setSpacing(6)
         
-        self.check_separator = CheckBox("题目间添加分割线", card)
+        self.check_separator = CheckBox("添加分割线", card)
         self.check_separator.setChecked(False)
         grid.addWidget(self.check_separator, 0, 0)
         
-        self.check_question_number = CheckBox("显示题目编号", card)
+        self.check_question_number = CheckBox("题目编号", card)
         self.check_question_number.setChecked(True)
         grid.addWidget(self.check_question_number, 0, 1)
         
-        self.check_question_type = CheckBox("显示题目类型", card)
+        self.check_question_type = CheckBox("题目类型", card)
         self.check_question_type.setChecked(True)
         grid.addWidget(self.check_question_type, 1, 0)
         
-        self.check_correct_status = CheckBox("显示正确/错误状态", card)
+        self.check_correct_status = CheckBox("正确/错误", card)
         self.check_correct_status.setChecked(True)
         grid.addWidget(self.check_correct_status, 1, 1)
         
@@ -412,8 +397,8 @@ class ExportDialog(QDialog):
         """创建输出路径卡片"""
         card = CardWidget(self)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(16, 16, 16, 16)
-        card_layout.setSpacing(12)
+        card_layout.setContentsMargins(16, 12, 16, 12)
+        card_layout.setSpacing(8)
         
         # 标题
         title = StrongBodyLabel("输出设置", card)
@@ -453,6 +438,97 @@ class ExportDialog(QDialog):
         """清理文件名"""
         from core.common import sanitize_filename
         return sanitize_filename(filename)
+    
+    def _create_template_selector(self, card, card_layout):
+        """创建 HTML 模板选择区域"""
+        from PySide6.QtWidgets import QLabel
+        from PySide6.QtGui import QPixmap
+        from qfluentwidgets import ComboBox
+        from core.html_templates import get_template_registry
+        
+        self.template_container = QWidget(card)
+        tmpl_layout = QHBoxLayout(self.template_container)
+        tmpl_layout.setContentsMargins(24, 4, 0, 4)
+        tmpl_layout.setSpacing(10)
+        
+        # 左侧：标签 + 下拉框
+        left_layout = QVBoxLayout()
+        left_layout.setSpacing(6)
+        
+        tmpl_label = CaptionLabel("HTML 模板:", self.template_container)
+        left_layout.addWidget(tmpl_label)
+        
+        self.template_combo = ComboBox(self.template_container)
+        self.template_combo.setFixedWidth(180)
+        
+        registry = get_template_registry()
+        self._template_list = registry.list_all()
+        for tmpl_info in self._template_list:
+            self.template_combo.addItem(tmpl_info['name'])
+        
+        self.template_combo.setCurrentIndex(0)
+        self.template_combo.currentIndexChanged.connect(self._on_template_changed)
+        left_layout.addWidget(self.template_combo)
+        
+        tmpl_desc = CaptionLabel("", self.template_container)
+        tmpl_desc.setStyleSheet("color: #888;")
+        self._template_desc_label = tmpl_desc
+        left_layout.addWidget(tmpl_desc)
+        left_layout.addStretch()
+        
+        tmpl_layout.addLayout(left_layout)
+        
+        # 右侧：SVG 预览
+        self.template_preview = QLabel(self.template_container)
+        self.template_preview.setFixedSize(160, 112)
+        self.template_preview.setStyleSheet("border: 1px solid #ddd; border-radius: 6px; background: #f9f9f9;")
+        self.template_preview.setScaledContents(True)
+        tmpl_layout.addWidget(self.template_preview)
+        
+        tmpl_layout.addStretch()
+        
+        card_layout.addWidget(self.template_container)
+        
+        # 初始更新预览
+        self._on_template_changed(0)
+        
+        # 绑定 HTML 勾选框的状态来显示/隐藏模板选择区
+        html_check = self.format_checks.get('html')
+        if html_check:
+            html_check.stateChanged.connect(self._on_html_check_changed)
+            self.template_container.setVisible(html_check.isChecked())
+    
+    def _on_template_changed(self, index: int):
+        """模板选择变更"""
+        from PySide6.QtGui import QPixmap
+        from core.html_templates import get_template_registry
+        
+        if index < 0 or index >= len(self._template_list):
+            return
+        
+        tmpl_info = self._template_list[index]
+        self._template_desc_label.setText(tmpl_info['description'])
+        
+        registry = get_template_registry()
+        template = registry.get(tmpl_info['id'])
+        if template:
+            svg_data = template.get_preview_svg()
+            pixmap = QPixmap()
+            pixmap.loadFromData(svg_data.encode('utf-8'))
+            self.template_preview.setPixmap(pixmap)
+    
+    def _on_html_check_changed(self, state):
+        """HTML 勾选框状态变化"""
+        from PySide6.QtCore import Qt
+        checked = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
+        self.template_container.setVisible(checked)
+    
+    def _get_selected_template_id(self) -> str:
+        """获取当前选中的模板 ID"""
+        index = self.template_combo.currentIndex()
+        if 0 <= index < len(self._template_list):
+            return self._template_list[index]['id']
+        return 'default'
     
     def _set_all_formats(self, checked: bool):
         """全选/取消全选格式"""
@@ -545,7 +621,8 @@ class ExportDialog(QDialog):
         self.progress_container.show()
         
         # 启动工作线程
-        self.export_worker = ExportWorker(exporter, output_dir, formats, base_name)
+        html_template_id = self._get_selected_template_id() if 'html' in formats else 'default'
+        self.export_worker = ExportWorker(exporter, output_dir, formats, base_name, html_template_id)
         self.export_worker.progress.connect(self._on_progress)
         self.export_worker.finished.connect(self._on_export_finished)
         self.export_worker.error.connect(self._on_export_error)

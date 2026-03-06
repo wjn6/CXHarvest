@@ -765,7 +765,7 @@ class UpdateInfoDialog(MessageBoxBase):
                 time_label.setAlignment(Qt.AlignCenter)
                 time_label.setStyleSheet("color: #95a5a6;")
                 self.viewLayout.addWidget(time_label)
-            except:
+            except (ValueError, TypeError):
                 pass
         
         self.viewLayout.addSpacing(12)

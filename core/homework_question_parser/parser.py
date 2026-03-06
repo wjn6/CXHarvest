@@ -424,6 +424,11 @@ class HomeworkQuestionParser:
                 session = self.login_manager.session
                 response = session.get(homework_url, headers=self.headers, timeout=30)
                 response.raise_for_status()
+                
+                # 检测登录页面重定向（超星可能返回200但内容是登录页）
+                if '<title>用户登录</title>' in response.text or 'passport2.chaoxing.com/login' in response.text:
+                    app_logger.warning("作业详情页返回了登录页面，session已失效")
+                    return []
             else:
                 app_logger.info("无法获取登录session")
                 return []

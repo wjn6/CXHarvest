@@ -16,11 +16,25 @@ from qfluentwidgets import (
     BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
     PrimaryPushButton, PushButton, TransparentPushButton, ToolButton,
     SearchLineEdit, ComboBox, CheckBox, IndeterminateProgressBar,
-    InfoBar, InfoBarPosition, SmoothScrollArea
+    InfoBar, InfoBarPosition, SmoothScrollArea, isDarkTheme
 )
 from qfluentwidgets import FluentIcon as FIF
 
 import re
+
+
+def _c(light: str, dark: str = "") -> str:
+    """根据当前主题返回颜色值"""
+    if not dark:
+        light_map = {
+            "#333": "#ddd", "#333333": "#dddddd",
+            "#555": "#bbb", "#555555": "#bbbbbb",
+            "#666": "#aaa", "#666666": "#aaaaaa",
+            "#888": "#999", "#888888": "#999999",
+            "#aaa": "#777", "#aaaaaa": "#777777",
+        }
+        dark = light_map.get(light, light)
+    return dark if isDarkTheme() else light
 
 from core.enterprise_logger import app_logger
 from core.homework_question_parser import HomeworkQuestionParser
@@ -78,7 +92,7 @@ class QuestionCard(CardWidget):
         # 序号和类型组合
         q_type = get_question_field(self.question_data, 'question_type', '未知')
         self.index_label = CaptionLabel(f"第 {self.index + 1} 题 · {q_type}", self)
-        self.index_label.setStyleSheet("color: #666666;")
+        self.index_label.setStyleSheet(f"color: {_c('#666666')};")
         top_layout.addWidget(self.index_label)
         
         # 得分显示
@@ -170,7 +184,7 @@ class QuestionCard(CardWidget):
                 
                 opt_label = BodyLabel(text, self)
                 opt_label.setWordWrap(True)
-                opt_label.setStyleSheet("color: #555555; padding-left: 16px;")
+                opt_label.setStyleSheet(f"color: {_c('#555555')}; padding-left: 16px;")
                 options_layout.addWidget(opt_label)
                 
                 # 选项中的图片
@@ -205,14 +219,14 @@ class QuestionCard(CardWidget):
             display_answer = clean_my_answer[:200] + '...' if len(clean_my_answer) > 200 else clean_my_answer
             my_answer_text = BodyLabel(display_answer, self)
             my_answer_text.setWordWrap(True)
-            my_answer_text.setStyleSheet("color: #333;")
+            my_answer_text.setStyleSheet(f"color: {_c('#333')};")
             my_answer_header.addWidget(my_answer_text, 1)
         elif my_answer_images:
             # 只有图片，不显示文本
             my_answer_header.addStretch(1)
         else:
             my_answer_text = BodyLabel("(未作答)", self)
-            my_answer_text.setStyleSheet("color: #aaa;")
+            my_answer_text.setStyleSheet(f"color: {_c('#aaa')};")
             my_answer_header.addWidget(my_answer_text, 1)
         
         my_answer_container.addLayout(my_answer_header)
@@ -249,7 +263,7 @@ class QuestionCard(CardWidget):
         if clean_answer:
             display_correct = clean_answer[:200] + '...' if len(clean_answer) > 200 else clean_answer
             answer_text = BodyLabel(display_correct, self)
-            answer_text.setStyleSheet("color: #333;")
+            answer_text.setStyleSheet(f"color: {_c('#333')};")
             answer_text.setWordWrap(True)
             answer_header.addWidget(answer_text, 1)
         elif answer_images:
@@ -257,7 +271,7 @@ class QuestionCard(CardWidget):
             answer_header.addStretch(1)
         else:
             answer_text = BodyLabel("(未设置)", self)
-            answer_text.setStyleSheet("color: #aaa;")
+            answer_text.setStyleSheet(f"color: {_c('#aaa')};")
             answer_text.setWordWrap(True)
             answer_header.addWidget(answer_text, 1)
         answer_container.addLayout(answer_header)
@@ -280,11 +294,11 @@ class QuestionCard(CardWidget):
         if analysis:
             analysis_layout = QVBoxLayout()
             analysis_title = CaptionLabel("解析:", self)
-            analysis_title.setStyleSheet("color: #888888;")
+            analysis_title.setStyleSheet(f"color: {_c('#888888')};")
             display_analysis = analysis[:300] + '...' if len(analysis) > 300 else analysis
             analysis_text = CaptionLabel(display_analysis, self)
             analysis_text.setWordWrap(True)
-            analysis_text.setStyleSheet("color: #888888;")
+            analysis_text.setStyleSheet(f"color: {_c('#888888')};")
             analysis_layout.addWidget(analysis_title)
             analysis_layout.addWidget(analysis_text)
             layout.addLayout(analysis_layout)
@@ -428,7 +442,7 @@ class QuestionListFluent(QWidget):
         title_layout = QVBoxLayout()
         self.title_label = TitleLabel("题目列表", self)
         self.homework_label = CaptionLabel("", self)
-        self.homework_label.setStyleSheet("color: #888888;")
+        self.homework_label.setStyleSheet(f"color: {_c('#888888')};")
         title_layout.addWidget(self.title_label)
         title_layout.addWidget(self.homework_label)
         header_layout.addLayout(title_layout)
@@ -542,7 +556,7 @@ class QuestionListFluent(QWidget):
         self.loading_bar.setFixedWidth(200)
         
         self.loading_label = CaptionLabel("正在解析题目...", self.loading_container)
-        self.loading_label.setStyleSheet("color: #888888;")
+        self.loading_label.setStyleSheet(f"color: {_c('#888888')};")
         
         loading_layout.addWidget(self.loading_bar, alignment=Qt.AlignCenter)
         loading_layout.addSpacing(12)
@@ -594,7 +608,7 @@ class QuestionListFluent(QWidget):
         
         # 已选数量
         self.selected_label = CaptionLabel("已选择 0 题", self)
-        self.selected_label.setStyleSheet("color: #888888;")
+        self.selected_label.setStyleSheet(f"color: {_c('#888888')};")
         footer_layout.addWidget(self.selected_label)
         
         footer_layout.addStretch()

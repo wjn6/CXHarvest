@@ -463,6 +463,20 @@ class CourseListFluent(QWidget):
     
     def _on_load_error(self, error_msg: str):
         """加载错误"""
+        # 如果是登录过期，提示重新登录
+        if '登录' in error_msg and ('过期' in error_msg or '失效' in error_msg or '未登录' in error_msg):
+            InfoBar.warning(
+                title="登录已失效",
+                content="请重新登录后再试",
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self.window()
+            )
+            self.login_required.emit()
+            return
+        
         InfoBar.error(
             title="加载失败",
             content=error_msg,

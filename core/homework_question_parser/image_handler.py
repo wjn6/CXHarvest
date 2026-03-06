@@ -84,7 +84,7 @@ class ImageHandler:
             return f"https://p.ananas.chaoxing.com/star3/240_130c/{url}"
         return ''
 
-    def _download_image(self, url: str) -> Optional[Dict[str, Any]]:
+    def _download_image(self, url: str, max_retries: int = 3) -> Optional[Dict[str, Any]]:
         session = self._get_session()
         if not session:
             return None
@@ -94,17 +94,26 @@ class ImageHandler:
             return None
 
         headers = {**self.headers, 'Referer': 'https://i.chaoxing.com/'}
-        response = session.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
+        
+        import time
+        for attempt in range(max_retries):
+            try:
+                response = session.get(url, headers=headers, timeout=15)
+                response.raise_for_status()
 
-        content_type = (response.headers.get('content-type', '') or '').split(';')[0].strip()
-        if not content_type.startswith('image/'):
-            return None
+                content_type = (response.headers.get('content-type', '') or '').split(';')[0].strip()
+                if not content_type.startswith('image/'):
+                    return None
 
-        return {
-            'bytes': response.content,
-            'content_type': content_type
-        }
+                return {
+                    'bytes': response.content,
+                    'content_type': content_type
+                }
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
 
     def _compress_image(self, image_data: bytes) -> bytes:
         try:

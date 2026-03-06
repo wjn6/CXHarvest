@@ -359,8 +359,13 @@ class HomeworkManager(SessionManagerMixin):
             response = session.get(homework_url, headers=self.headers, timeout=30)
 
             if response.status_code == 200:
+                resp_text = response.text
+                if '<title>用户登录</title>' in resp_text or 'passport2.chaoxing.com/login' in resp_text:
+                    app_logger.warning(f"作业列表API返回了登录页面，session已失效")
+                    self.invalidate_session()
+                    return None
                 app_logger.success(f" 成功获取 {course_name} 的作业列表")
-                return response.text
+                return resp_text
             else:
                 app_logger.error(f" 获取 {course_name} 作业列表失败，状态码: {response.status_code}")
                 return None
