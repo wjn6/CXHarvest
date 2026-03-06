@@ -72,60 +72,8 @@ class TypeDetector:
             return '未知'
     
     def determine_question_type(self, container):
-        """判断题目类型"""
-        try:
-            # 方法0: 优先从 colorShallow span 提取 (如 "(简答题)")
-            color_shallow = container.find('span', class_='colorShallow')
-            if color_shallow:
-                type_text = color_shallow.get_text(strip=True)
-                # 移除括号
-                type_text = re.sub(r'[\(\)\（\）\[\]]', '', type_text).strip()
-                if type_text:
-                    return type_text
-            
-            # OCS策略：检查隐藏的 input 标签值
-            type_input = container.find('input', id=re.compile(r'^answertype')) or \
-                         container.find('input', attrs={'name': re.compile(r'^type')})
-            
-            if type_input and type_input.get('value'):
-                try:
-                    val = int(float(type_input.get('value')))
-                    # 映射关系参考 ocs.common.user.js getQuestionType
-                    if val == 0: return '单选题'
-                    if val == 1: return '多选题'
-                    if val == 3: return '判断题'
-                    if val == 4: return '简答题'
-                    if val in [2, 5, 6, 7, 8, 9, 10]: return '填空题'
-                    if val == 11: return '连线题'
-                    if val == 14: return '完形填空'
-                    if val == 15: return '阅读理解'
-                except (ValueError, TypeError):
-                    pass
-
-            text_content = container.get_text().lower()
-            
-            # 判断题目类型的关键词
-            if any(keyword in text_content for keyword in ['单选题', 'single', '单选']):
-                return '单选题'
-            elif any(keyword in text_content for keyword in ['多选题', 'multiple', '多选']):
-                return '多选题'
-            elif any(keyword in text_content for keyword in ['判断题', 'true', 'false', '判断']):
-                return '判断题'
-            elif any(keyword in text_content for keyword in ['填空题', 'blank', '填空']):
-                return '填空题'
-            elif any(keyword in text_content for keyword in ['简答题', '问答题', 'essay', '简答', '论述']):
-                return '简答题'
-            else:
-                # 根据选项判断
-                if re.search(r'[ABCD][\.、]', text_content):
-                    return '单选题' if len(re.findall(r'[ABCD][\.、]', text_content)) <= 4 else '多选题'
-                elif re.search(r'[√×✓✗对错是否][\.、]?', text_content):
-                    return '判断题'
-                else:
-                    return '简答题'
-        except Exception as e:
-            app_logger.error(f"判断题目类型失败: {e}")
-            return '未知'
+        """判断题目类型（委托给 OCS 增强版）"""
+        return self.determine_question_type_ocs(container)
     
     def is_valid_question(self, text):
         """判断是否为有效题目 - 宽松策略，优先保留题目"""

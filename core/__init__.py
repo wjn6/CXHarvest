@@ -7,7 +7,8 @@
 from .common import (
     AppConstants, CourseInfo, HomeworkInfo,
     AppError, LoginError, NetworkError, ParseError,
-    safe_json_load, safe_json_save, setup_session
+    safe_json_load, safe_json_save, setup_session,
+    sanitize_filename
 )
 from .login_manager import LoginManager
 from .course_manager import CourseManager
@@ -21,6 +22,7 @@ __all__ = [
     'AppConstants', 'CourseInfo', 'HomeworkInfo',
     'AppError', 'LoginError', 'NetworkError', 'ParseError',
     'safe_json_load', 'safe_json_save', 'setup_session',
+    'sanitize_filename',
     'LoginManager', 'CourseManager', 'HomeworkManager', 
     'HomeworkCountManager',
     'QuestionExporter', 'ExportOptions',

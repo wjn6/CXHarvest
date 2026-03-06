@@ -6,6 +6,7 @@
 
 import json
 import os
+import uuid
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -70,7 +71,7 @@ class ExportHistoryManager:
             新创建的记录
         """
         record = {
-            "id": len(self._history) + 1,
+            "id": uuid.uuid4().hex[:12],
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "course_name": course_name,
             "homework_titles": homework_titles,
@@ -110,17 +111,18 @@ class ExportHistoryManager:
             return self._history[:limit]
         return self._history
     
-    def delete_record(self, record_id: int) -> bool:
+    def delete_record(self, record_id) -> bool:
         """删除指定记录
         
         Args:
-            record_id: 记录ID
+            record_id: 记录ID（字符串或整数，兼容新旧格式）
             
         Returns:
             是否删除成功
         """
         for i, record in enumerate(self._history):
-            if record.get("id") == record_id:
+            rid = record.get("id")
+            if rid == record_id or str(rid) == str(record_id):
                 self._history.pop(i)
                 self._save_history()
                 return True

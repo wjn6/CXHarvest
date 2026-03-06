@@ -15,9 +15,6 @@ import base64
 import time
 import re
 import uuid
-import random
-import string
-import tempfile
 
 # =============================================================================
 # 第三方库导入
@@ -67,11 +64,13 @@ class LoginManager:
         adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=_pool, pool_maxsize=_pool)
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
-        # 禁用SSL警告
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        if not _verify:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
-        # 直接使用固定的AES加密密钥（来自原项目）
+        # 超星学习通前端 JavaScript 中的公开密钥，非私密信息。
+        # 该密钥可从 passport2.chaoxing.com 登录页面 JS 源码中获取，
+        # 用于客户端对密码等字段进行 AES-CBC 加密后传输。
         self.transfer_key = "u2oh6Vu^HWe4_AES"
         from .common import AppConstants
         self.headers = AppConstants.DEFAULT_HEADERS.copy()
@@ -90,7 +89,7 @@ class LoginManager:
         self.load_cookies()
         
     def encrypt_aes(self, text):
-        """AES-CBC加密"""
+        """AES-CBC加密，密钥为超星前端公开密钥（非私密，来自平台前端JS）"""
         text_bytes = text.encode('utf-8')
         key_bytes = self.transfer_key.encode('utf-8')
     
@@ -106,7 +105,7 @@ class LoginManager:
             app_logger.info("正在初始化会话...")
             # 获取验证串
             validate = self.get_validate_string()
-            app_logger.info(f"获取到验证串: {validate[:10]}...")
+            app_logger.info(f"获取到验证串: {validate[:10]}***")
             
             # 加密手机号和密码（按照原始实现，手机号也需要加密）
             encrypted_phone = self.encrypt_aes(username)
@@ -146,7 +145,7 @@ class LoginManager:
                         raise Exception(error_msg)
                 except Exception as e:
                     app_logger.error(f"解析响应失败: {e}")
-                    app_logger.info(f"原始响应: {response.text}")
+                    app_logger.info(f"响应状态: {response.status_code}, 长度: {len(response.text)}")
                     raise Exception("登录失败，请检查用户名和密码")
             else:
                 raise Exception(f"请求失败，状态码: {response.status_code}")
@@ -174,16 +173,15 @@ class LoginManager:
                 if uuid_input and enc_input:
                     self.uuid = uuid_input.get('value')
                     self.enc = enc_input.get('value')
-                    app_logger.success(f"成功获取参数 - UUID: {self.uuid}, ENC: {self.enc}")
+                    app_logger.success(f"成功获取参数 - UUID: {self.uuid[:8]}***, ENC: {self.enc[:8]}***")
                     return True
                 else:
                     # 如果找不到，可能是页面结构变化，尝试直接生成随机值
                     app_logger.info("无法在页面中找到UUID和ENC参数，尝试生成随机值...")
-                    import random
-                    import string
-                    self.uuid = ''.join(random.choice(string.hexdigits.lower()) for _ in range(32))
-                    self.enc = ''.join(random.choice(string.hexdigits.lower()) for _ in range(32))
-                    app_logger.info(f"生成随机参数 - UUID: {self.uuid}, ENC: {self.enc}")
+                    import secrets
+                    self.uuid = secrets.token_hex(16)
+                    self.enc = secrets.token_hex(16)
+                    app_logger.info(f"生成随机参数 - UUID: {self.uuid[:8]}***, ENC: {self.enc[:8]}***")
                     return True
             else:
                 app_logger.error(f"获取登录页面失败，状态码: {response.status_code}")
@@ -221,8 +219,9 @@ class LoginManager:
                     app_logger.info(f"响应内容（前200字符）: {response.text[:200]}")
                     raise Exception("服务器返回HTML而不是二维码图片，可能参数无效")
                 
-                # 保存二维码图片到临时目录
-                temp_dir = tempfile.gettempdir()
+                # 保存二维码图片到应用临时目录
+                from .common import PathManager
+                temp_dir = str(PathManager.get_temp_dir())
                 qr_path = os.path.join(temp_dir, f"chaoxing_qrcode_{self.uuid}.png")
                 
                 with open(qr_path, 'wb') as f:
@@ -276,7 +275,7 @@ class LoginManager:
                     if response.status_code == 200:
                         try:
                             result = response.json()
-                            app_logger.debug(f"检查结果: {json.dumps(result, ensure_ascii=False)}")
+                            app_logger.debug(f"检查结果: status={result.get('status')}, type={result.get('type')}")
                             
                             # 根据原始login.py的逻辑判断状态
                             if result.get('status'):
@@ -357,26 +356,25 @@ class LoginManager:
             
             if response.status_code == 200:
                 import uuid
-                captcha_filename = f"captcha_{uuid.uuid4().hex}.png"
+                from .common import PathManager
+                captcha_filename = str(PathManager.get_temp_dir() / f"captcha_{uuid.uuid4().hex}.png")
                 with open(captcha_filename, "wb") as f:
                     f.write(response.content)
                 
-                # 尝试显示图片
                 try:
-                    from PIL import Image
-                    Image.open(captcha_filename).show()
-                except ImportError:
-                    app_logger.info(f"验证码已保存到 {captcha_filename}，请手动打开查看")
-                
-                captcha_code = input("请输入图片验证码: ")
-                
-                # 清理临时文件
-                try:
-                    os.remove(captcha_filename)
-                except:
-                    pass
-                
-                return captcha_code
+                    try:
+                        from PIL import Image
+                        Image.open(captcha_filename).show()
+                    except ImportError:
+                        app_logger.info(f"验证码已保存到 {captcha_filename}，请手动打开查看")
+                    
+                    captcha_code = input("请输入图片验证码: ")
+                    return captcha_code
+                finally:
+                    try:
+                        os.remove(captcha_filename)
+                    except Exception:
+                        pass
         except Exception as e:
             app_logger.error(f"获取验证码失败: {e}")
         
@@ -492,7 +490,7 @@ class LoginManager:
                 data = response.json()
                 if "token" in data:
                     return data["token"]
-        except:
+        except Exception:
             pass
         
         return ""
@@ -500,7 +498,7 @@ class LoginManager:
     def check_login_status(self):
         """检查当前登录状态"""
         try:
-            app_logger.debug(f" 检查登录状态 - user_info: {self.user_info}")
+            app_logger.debug(f" 检查登录状态 - 已有用户信息: {bool(self.user_info)}")
             
             # 检查是否有用户信息（说明已登录）
             if self.user_info and self.user_info.get('name'):
@@ -583,7 +581,7 @@ class LoginManager:
         # 最后的兜底方案
         self.user_info['name'] = '学习通用户'
         self.user_info['phone'] = ''
-        app_logger.info(f" 使用兜底用户信息: {self.user_info}")
+        app_logger.info(" 使用兜底用户信息")
         return self.user_info
         
     def save_cookies(self):

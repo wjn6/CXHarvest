@@ -72,6 +72,7 @@ class HomeworkManager(SessionManagerMixin):
             # 方法1：直接从课程数据中获取ID（优先）
             courseid = course_data.get('id', '')
             clazzid = course_data.get('clazz_id', '')
+            cpi = ''
             
             # 方法2：如果没有直接ID，尝试从课程链接中提取所有参数
             course_link = course_data.get('link', '')
@@ -88,12 +89,14 @@ class HomeworkManager(SessionManagerMixin):
                 if cpi_match:
                     cpi = cpi_match.group(1)
                     app_logger.debug("从链接中提取到cpi", {"cpi": cpi})
-                    
-                    return {
-                        'courseid': str(courseid),
-                        'clazzid': str(clazzid),
-                        'cpi': str(cpi)
-                    }
+            
+            # 如果三个参数齐全，直接返回
+            if courseid and clazzid and cpi:
+                return {
+                    'courseid': str(courseid),
+                    'clazzid': str(clazzid),
+                    'cpi': str(cpi)
+                }
             
             # 方法3：如果链接中没有cpi，需要获取当前登录用户的ID
             if not courseid or not clazzid:
@@ -299,8 +302,6 @@ class HomeworkManager(SessionManagerMixin):
         Returns:
             int: 总页数，如果没有分页则返回1
         """
-        import re
-        
         try:
             max_page = 1
             

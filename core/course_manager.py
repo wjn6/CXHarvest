@@ -8,10 +8,7 @@
 # =============================================================================
 # 标准库导入
 # =============================================================================
-import os
-import sys
 import json
-import time
 import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -282,231 +279,6 @@ class CourseManager(SessionManagerMixin):
             app_logger.error(f"解析HTML内容时发生错误: {e}")
             return []
             
-    def extract_course_info(self, course_element):
-        """从课程元素中提取信息"""
-        try:
-            course_info = {}
-            
-            # 课程名称
-            name_elem = course_element.find('h3') or course_element.find('h4') or course_element.find('.course-name')
-            if name_elem:
-                course_info['name'] = name_elem.get_text().strip()
-            else:
-                course_info['name'] = "未知课程"
-                
-            # 教师信息
-            teacher_elem = course_element.find('.teacher') or course_element.find('.instructor')
-            if teacher_elem:
-                course_info['teacher'] = teacher_elem.get_text().strip()
-            else:
-                course_info['teacher'] = "未知教师"
-                
-            # 课程ID
-            course_link = course_element.find('a')
-            if course_link and course_link.get('href'):
-                href = course_link.get('href')
-                course_id_match = re.search(r'courseid=(\d+)', href)
-                if course_id_match:
-                    course_info['id'] = course_id_match.group(1)
-                    course_info['link'] = href
-                    
-            # 其他信息
-            course_info['homework_count'] = 0  # 默认值，后续可以更新
-            course_info['status'] = 'active'
-            course_info['description'] = course_info.get('name', '')
-            
-            return course_info if course_info.get('id') else None
-            
-        except Exception as e:
-            app_logger.error("提取课程信息失败: {e}")
-            return None
-            
-    def try_parse_json_courses(self, html_content):
-        """尝试从HTML中解析JSON格式的课程数据"""
-        try:
-            # 查找可能包含课程数据的script标签
-            soup = BeautifulSoup(html_content, 'html.parser')
-            script_tags = soup.find_all('script')
-            
-            for script in script_tags:
-                script_content = script.get_text()
-                if 'course' in script_content.lower() and '{' in script_content:
-                    # 尝试提取JSON数据
-                    json_matches = re.findall(r'\{[^{}]*course[^{}]*\}', script_content, re.IGNORECASE)
-                    for match in json_matches:
-                        try:
-                            course_data = json.loads(match)
-                            # 处理JSON课程数据
-                            return self.process_json_courses(course_data)
-                        except:
-                            continue
-                            
-            return []
-            
-        except Exception as e:
-            app_logger.error(f"解析JSON课程数据失败: {e}")
-            return []
-            
-    def process_json_courses(self, json_data):
-        """处理JSON格式的课程数据"""
-        courses = []
-        try:
-            if isinstance(json_data, dict):
-                # 如果是单个课程对象
-                course = self.normalize_course_data(json_data)
-                if course:
-                    courses.append(course)
-            elif isinstance(json_data, list):
-                # 如果是课程列表
-                for item in json_data:
-                    course = self.normalize_course_data(item)
-                    if course:
-                        courses.append(course)
-        except Exception as e:
-            app_logger.error(f"处理JSON课程数据失败: {e}")
-            
-        return courses
-        
-    def normalize_course_data(self, raw_data):
-        """标准化课程数据格式"""
-        try:
-            course = {
-                'id': str(raw_data.get('courseid', raw_data.get('id', ''))),
-                'name': raw_data.get('coursename', raw_data.get('name', '未知课程')),
-                'teacher': raw_data.get('teachername', raw_data.get('teacher', '未知教师')),
-                'description': raw_data.get('coursedesc', raw_data.get('description', '')),
-                'homework_count': 0,
-                'status': 'active',
-                'link': raw_data.get('courselink', raw_data.get('link', ''))
-            }
-            
-            return course if course['id'] else None
-            
-        except Exception as e:
-            app_logger.error(f"标准化课程数据失败: {e}")
-            return None
-            
-    def get_homework_list(self, course_id: str) -> Dict[str, Any]:
-        """获取指定课程的作业列表"""
-        try:
-            session = self.get_session()
-            
-            # 构建作业列表URL
-            homework_url = self.build_homework_url(course_id)
-            
-            response = session.get(homework_url, headers=self.headers)
-            
-            if response.status_code == 200:
-                homework_data = self.parse_homework_data(response.text, course_id)
-                return homework_data
-            else:
-                raise Exception(f"获取作业列表失败: HTTP {response.status_code}")
-                
-        except Exception as e:
-            app_logger.error(f"获取作业列表失败: {e}")
-            raise
-            
-    def build_homework_url(self, course_id: str) -> str:
-        """构建作业列表URL"""
-        # 这里需要根据超星学习通的实际URL格式来构建
-        # 基础URL格式（需要根据实际情况调整）
-        base_url = "https://mooc1.chaoxing.com/homework/phone"
-        
-        # 添加课程参数
-        url = f"{base_url}?courseid={course_id}&clazzid=0&cpi=0"
-        
-        return url
-        
-    def parse_homework_data(self, html_content: str, course_id: str) -> Dict[str, Any]:
-        """解析作业数据"""
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # 获取课程信息
-            course_info = self.get_course_info_by_id(course_id)
-            
-            # 解析作业列表
-            homework_list = []
-            
-            # 查找作业项目
-            homework_items = soup.find_all('li', class_='homework-item')
-            if not homework_items:
-                homework_items = soup.find_all('div', class_='homework')
-                
-            for item in homework_items:
-                homework_info = self.extract_homework_info(item)
-                if homework_info:
-                    homework_info['course_id'] = course_id
-                    homework_list.append(homework_info)
-                    
-            return {
-                'course_info': course_info,
-                'homework_list': homework_list,
-                'total_count': len(homework_list)
-            }
-            
-        except Exception as e:
-            app_logger.error(f"解析作业数据失败: {e}")
-            return {
-                'course_info': {},
-                'homework_list': [],
-                'total_count': 0
-            }
-            
-    def extract_homework_info(self, homework_element):
-        """从作业元素中提取信息"""
-        try:
-            homework_info = {}
-            
-            # 作业标题
-            title_elem = homework_element.find('h3') or homework_element.find('.title')
-            if title_elem:
-                homework_info['title'] = title_elem.get_text().strip()
-            else:
-                homework_info['title'] = "未知作业"
-                
-            # 截止时间
-            deadline_elem = homework_element.find('.deadline') or homework_element.find('.end-time')
-            if deadline_elem:
-                homework_info['deadline'] = deadline_elem.get_text().strip()
-            else:
-                homework_info['deadline'] = "未设置"
-                
-            # 作业状态
-            status_elem = homework_element.find('.status')
-            if status_elem:
-                homework_info['status'] = status_elem.get_text().strip()
-            else:
-                homework_info['status'] = "未知"
-                
-            # 得分
-            score_elem = homework_element.find('.score')
-            if score_elem:
-                score_text = score_elem.get_text().strip()
-                score_match = re.search(r'(\d+(?:\.\d+)?)', score_text)
-                if score_match:
-                    homework_info['score'] = float(score_match.group(1))
-                else:
-                    homework_info['score'] = 0
-            else:
-                homework_info['score'] = 0
-                
-            # 作业链接
-            link_elem = homework_element.find('a')
-            if link_elem and link_elem.get('href'):
-                homework_info['link'] = link_elem.get('href')
-                
-                # 从链接中提取作业ID
-                homework_id_match = re.search(r'homeworkid=(\d+)', homework_info['link'])
-                if homework_id_match:
-                    homework_info['id'] = homework_id_match.group(1)
-                    
-            return homework_info if homework_info.get('id') else None
-            
-        except Exception as e:
-            app_logger.error(f"提取作业信息失败: {e}")
-            return None
-            
     def get_course_info_by_id(self, course_id):
         """根据课程ID获取课程信息"""
         for course in self.courses:
@@ -514,40 +286,6 @@ class CourseManager(SessionManagerMixin):
                 return course
         return {'id': course_id, 'name': '未知课程', 'teacher': '未知教师'}
         
-    def save_course_data(self, filename="course_data.json"):
-        """保存课程数据到文件"""
-        try:
-            data = {
-                'timestamp': datetime.now().isoformat(),
-                'course_count': len(self.courses),
-                'courses': self.courses
-            }
-            
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                
-            return True
-            
-        except Exception as e:
-            app_logger.error(f"保存课程数据失败: {e}")
-            return False
-            
-    def load_course_data(self, filename="course_data.json"):
-        """从文件加载课程数据"""
-        try:
-            if os.path.exists(filename):
-                with open(filename, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    
-                self.courses = data.get('courses', [])
-                return True
-                
-            return False
-            
-        except Exception as e:
-            app_logger.error(f"加载课程数据失败: {e}")
-            return False
-            
     def update_homework_count(self, course_id, count):
         """更新课程的作业数量"""
         for course in self.courses:
@@ -576,7 +314,7 @@ class CourseManager(SessionManagerMixin):
         """获取课程统计信息"""
         total_courses = len(self.courses)
         total_homework = sum(course.get('homework_count', 0) for course in self.courses)
-        active_courses = len([c for c in self.courses if c.get('status') == 'active'])
+        active_courses = len([c for c in self.courses if c.get('status') in ('进行中', 'active')])
         
         return {
             'total_courses': total_courses,

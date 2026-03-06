@@ -8,8 +8,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QScrollArea, QFrame, QSizePolicy
 )
+import threading
+
 from PySide6.QtCore import Qt, Signal, QThread, QSize, QTimer
-from PySide6.QtGui import QPixmap, QFont
+from PySide6.QtGui import QImage, QPixmap, QFont
 
 from qfluentwidgets import (
     CardWidget, SimpleCardWidget, ElevatedCardWidget,
@@ -32,6 +34,9 @@ _image_load_queue = []  # 等待加载的图片队列
 _active_image_count = 0  # 当前正在加载的图片数
 _max_concurrent_images = 5  # 最大并发加载数
 
+# 线程安全锁，保护 IMAGE_CACHE / _image_load_queue / _active_image_count
+_cache_lock = threading.Lock()
+
 def _trim_image_cache():
     """裁剪图片缓存"""
     if len(IMAGE_CACHE) > IMAGE_CACHE_MAX_SIZE:
@@ -43,17 +48,19 @@ def _trim_image_cache():
 def _process_image_queue():
     """处理图片加载队列"""
     global _active_image_count
-    while _image_load_queue and _active_image_count < _max_concurrent_images:
-        worker, callback = _image_load_queue.pop(0)
-        worker.image_loaded.connect(callback)
-        worker.finished.connect(_on_image_worker_finished)
-        _active_image_count += 1
-        worker.start()
+    with _cache_lock:
+        while _image_load_queue and _active_image_count < _max_concurrent_images:
+            worker, callback = _image_load_queue.pop(0)
+            worker.image_loaded.connect(callback)
+            worker.finished.connect(_on_image_worker_finished)
+            _active_image_count += 1
+            worker.start()
 
 def _on_image_worker_finished():
     """图片加载完成，处理下一个"""
     global _active_image_count
-    _active_image_count = max(0, _active_image_count - 1)
+    with _cache_lock:
+        _active_image_count = max(0, _active_image_count - 1)
     _process_image_queue()
 
 class CourseLoadWorker(QThread):
@@ -80,7 +87,7 @@ _active_image_workers = set()
 
 class ImageLoadWorker(QThread):
     """图片加载线程"""
-    image_loaded = Signal(QPixmap, str)  # 增加url参数以便缓存
+    image_loaded = Signal(QImage, str)  # 增加url参数以便缓存
     
     def __init__(self, url: str):
         super().__init__()
@@ -91,10 +98,10 @@ class ImageLoadWorker(QThread):
     
     def run(self):
         try:
-            # 检查缓存
-            if self.url in IMAGE_CACHE:
-                self.image_loaded.emit(IMAGE_CACHE[self.url], self.url)
-                return
+            with _cache_lock:
+                if self.url in IMAGE_CACHE:
+                    self.image_loaded.emit(IMAGE_CACHE[self.url], self.url)
+                    return
 
             import requests
             headers = {
@@ -103,14 +110,14 @@ class ImageLoadWorker(QThread):
             }
             response = requests.get(self.url, headers=headers, timeout=10)
             if response.status_code == 200 and response.content:
-                pixmap = QPixmap()
-                if pixmap.loadFromData(response.content):
-                    # 裁剪缓存后存入
-                    _trim_image_cache()
-                    IMAGE_CACHE[self.url] = pixmap
-                    self.image_loaded.emit(pixmap, self.url)
+                image = QImage()
+                if image.loadFromData(response.content):
+                    with _cache_lock:
+                        _trim_image_cache()
+                        IMAGE_CACHE[self.url] = image
+                    self.image_loaded.emit(image, self.url)
         except Exception as e:
-            pass  # 加载失败时保持默认灰色背景
+            app_logger.debug(f"图片加载失败 {self.url}: {e}")
             
     def _cleanup(self):
         """线程结束清理"""
@@ -188,22 +195,24 @@ class CourseCard(ElevatedCardWidget):
         if not image_url:
             return
 
-        # 先检查缓存
-        if image_url in IMAGE_CACHE:
-            self._set_image(IMAGE_CACHE[image_url])
+        with _cache_lock:
+            cached = IMAGE_CACHE.get(image_url)
+        if cached is not None:
+            self._set_image(cached)
             return
 
-        # 使用并发控制队列加载图片
         self.image_worker = ImageLoadWorker(image_url)
-        _image_load_queue.append((self.image_worker, self._on_image_loaded))
+        with _cache_lock:
+            _image_load_queue.append((self.image_worker, self._on_image_loaded))
         _process_image_queue()
     
-    def _on_image_loaded(self, pixmap: QPixmap, url: str):
-        """图片加载完成"""
-        self._set_image(pixmap)
+    def _on_image_loaded(self, image: QImage, url: str):
+        """图片加载完成，在主线程中将 QImage 转为 QPixmap"""
+        self._set_image(image)
         
-    def _set_image(self, pixmap):
-        if not pixmap.isNull():
+    def _set_image(self, image: QImage):
+        if not image.isNull():
+            pixmap = QPixmap.fromImage(image)
             scaled = pixmap.scaled(80, 80, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
             self.image_label.setPixmap(scaled)
     
@@ -212,7 +221,7 @@ class CourseCard(ElevatedCardWidget):
         if self.image_worker:
             try:
                 self.image_worker.image_loaded.disconnect(self._on_image_loaded)
-            except:
+            except Exception:
                 pass
             self.image_worker = None
     
@@ -315,7 +324,11 @@ class CourseListFluent(QWidget):
         self.search_edit = SearchLineEdit(self)
         self.search_edit.setPlaceholderText("搜索课程名称或教师...")
         self.search_edit.setFixedWidth(300)
-        self.search_edit.textChanged.connect(self._filter_courses)
+        self._search_debounce_timer = QTimer(self)
+        self._search_debounce_timer.setSingleShot(True)
+        self._search_debounce_timer.setInterval(300)
+        self._search_debounce_timer.timeout.connect(self._filter_courses)
+        self.search_edit.textChanged.connect(self._on_search_text_changed)
         toolbar_layout.addWidget(self.search_edit)
         
         # 状态筛选
@@ -474,6 +487,10 @@ class CourseListFluent(QWidget):
                 item.hide()
                 item.deleteLater()
     
+    def _on_search_text_changed(self):
+        """搜索文本变化时重启防抖计时器"""
+        self._search_debounce_timer.start()
+
     def _filter_courses(self):
         """筛选课程"""
         keyword = self.search_edit.text().strip().lower()
@@ -510,6 +527,7 @@ class CourseListFluent(QWidget):
         
         # 重建整个内容容器，彻底解决布局错位问题
         if hasattr(self, 'content_widget') and self.content_widget:
+            self.scroll_area.takeWidget()
             self.content_widget.deleteLater()
             self.content_widget = None
             
@@ -564,7 +582,7 @@ class CourseListFluent(QWidget):
         
         # 如果还有更多，延迟渲染下一批
         if end < len(self.filtered_courses):
-            self._batch_timer = QTimer()
+            self._batch_timer = QTimer(self)
             self._batch_timer.setSingleShot(True)
             self._batch_timer.timeout.connect(self._render_next_batch)
             self._batch_timer.start(10)  # 10ms后渲染下一批

@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QFileDialog, QGridLayout
 )
 from PySide6.QtCore import Qt, Signal, QThread
-from PySide6.QtGui import QColor
 
 from qfluentwidgets import (
     CardWidget, BodyLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
@@ -31,10 +30,10 @@ from core.export_history import get_export_history_manager
 
 
 class ExportWorker(QThread):
-    """导出工作线程"""
-    progress = Signal(str, int)  # 消息, 百分比
-    finished = Signal(dict)       # 结果
-    error = Signal(str)           # 错误消息
+    """导出工作线程（支持取消）"""
+    progress = Signal(str, int)
+    finished = Signal(dict)
+    error = Signal(str)
     
     def __init__(self, exporter: QuestionExporter, output_dir: str, 
                  formats: List[str], base_name: str):
@@ -43,33 +42,39 @@ class ExportWorker(QThread):
         self.output_dir = output_dir
         self.formats = formats
         self.base_name = base_name
+        self._cancelled = False
+    
+    def cancel(self):
+        self._cancelled = True
     
     def run(self):
         try:
             results = {}
             total = len(self.formats)
+            fmt_ext = {
+                'html': '.html', 'json': '.json', 'markdown': '.md',
+                'word': '.docx', 'pdf': '.pdf', 'excel': '.xlsx'
+            }
+            fmt_func = {
+                'html': self.exporter.export_html,
+                'json': self.exporter.export_json,
+                'markdown': self.exporter.export_markdown,
+                'word': self.exporter.export_word,
+                'pdf': self.exporter.export_pdf,
+                'excel': self.exporter.export_excel,
+            }
             
             for i, fmt in enumerate(self.formats):
-                self.progress.emit(f"正在导出 {fmt.upper()}...", int((i / total) * 100))
+                if self._cancelled:
+                    self.progress.emit("导出已中断", int((i / total) * 100))
+                    break
                 
-                if fmt == 'html':
-                    path = os.path.join(self.output_dir, f"{self.base_name}.html")
-                    results['html'] = self.exporter.export_html(path)
-                elif fmt == 'json':
-                    path = os.path.join(self.output_dir, f"{self.base_name}.json")
-                    results['json'] = self.exporter.export_json(path)
-                elif fmt == 'markdown':
-                    path = os.path.join(self.output_dir, f"{self.base_name}.md")
-                    results['markdown'] = self.exporter.export_markdown(path)
-                elif fmt == 'word':
-                    path = os.path.join(self.output_dir, f"{self.base_name}.docx")
-                    results['word'] = self.exporter.export_word(path)
-                elif fmt == 'pdf':
-                    path = os.path.join(self.output_dir, f"{self.base_name}.pdf")
-                    results['pdf'] = self.exporter.export_pdf(path)
-                elif fmt == 'excel':
-                    path = os.path.join(self.output_dir, f"{self.base_name}.xlsx")
-                    results['excel'] = self.exporter.export_excel(path)
+                self.progress.emit(f"正在导出 {fmt.upper()}...", int((i / total) * 100))
+                ext = fmt_ext.get(fmt, f'.{fmt}')
+                export_fn = fmt_func.get(fmt)
+                if export_fn:
+                    path = os.path.join(self.output_dir, f"{self.base_name}{ext}")
+                    results[fmt] = export_fn(path)
             
             self.progress.emit("导出完成", 100)
             self.finished.emit(results)
@@ -97,6 +102,7 @@ class ExportDialog(QDialog):
         # 设置无边框窗口
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self._exporting = False
         
         # 用于窗口拖动
         self._drag_pos = None
@@ -253,7 +259,7 @@ class ExportDialog(QDialog):
         button_layout = QHBoxLayout()
         
         self.cancel_btn = PushButton("取消", self)
-        self.cancel_btn.clicked.connect(self.reject)
+        self.cancel_btn.clicked.connect(self._on_cancel_clicked)
         button_layout.addWidget(self.cancel_btn)
         
         button_layout.addStretch()
@@ -445,9 +451,8 @@ class ExportDialog(QDialog):
     
     def _sanitize_filename(self, filename: str) -> str:
         """清理文件名"""
-        import re
-        illegal_chars = r'[\\/:*?"<>|]'
-        return re.sub(illegal_chars, '_', filename)
+        from core.common import sanitize_filename
+        return sanitize_filename(filename)
     
     def _set_all_formats(self, checked: bool):
         """全选/取消全选格式"""
@@ -456,7 +461,8 @@ class ExportDialog(QDialog):
     
     def _load_default_path(self):
         """加载默认路径"""
-        default_dir = os.path.join(os.path.expanduser("~"), "Desktop", "题目导出")
+        from core.common import PathManager
+        default_dir = str(PathManager.get_exports_dir())
         self.path_edit.setText(default_dir)
     
     def _browse_output_dir(self):
@@ -532,9 +538,10 @@ class ExportDialog(QDialog):
         exporter = QuestionExporter(self.questions, self.homework_title)
         exporter.set_options(self._build_export_options())
         
-        # 禁用界面
+        # 禁用导出按钮，取消按钮变为中断
         self.export_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("中断导出")
+        self._exporting = True
         self.progress_container.show()
         
         # 启动工作线程
@@ -552,7 +559,8 @@ class ExportDialog(QDialog):
         """导出完成"""
         self.progress_container.hide()
         self.export_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.setText("取消")
+        self._exporting = False
         
         # 统计结果
         success_count = sum(1 for v in results.values() if v)
@@ -575,8 +583,7 @@ class ExportDialog(QDialog):
             
             # 打开输出目录
             output_dir = self.path_edit.text()
-            if os.path.exists(output_dir):
-                os.startfile(output_dir)
+            self._open_directory(output_dir)
             
             self.accept()
         else:
@@ -595,7 +602,8 @@ class ExportDialog(QDialog):
         """导出错误"""
         self.progress_container.hide()
         self.export_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.setText("取消")
+        self._exporting = False
         
         InfoBar.error(
             title="导出失败",
@@ -639,6 +647,40 @@ class ExportDialog(QDialog):
                 )
         except Exception as e:
             app_logger.warning(f"保存导出历史失败: {e}")
+
+    @staticmethod
+    def _open_directory(path):
+        """跨平台打开目录"""
+        import subprocess, sys
+        try:
+            if not os.path.exists(path):
+                return
+            if sys.platform == 'win32':
+                os.startfile(path)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', path])
+            else:
+                subprocess.Popen(['xdg-open', path])
+        except Exception as e:
+            app_logger.warning(f"打开目录失败: {e}")
+
+    def _on_cancel_clicked(self):
+        """取消按钮处理"""
+        if self._exporting and hasattr(self, 'export_worker') and self.export_worker and self.export_worker.isRunning():
+            self.export_worker.cancel()
+            self.cancel_btn.setEnabled(False)
+            self.cancel_btn.setText("正在中断...")
+        else:
+            self.reject()
+
+    def keyPressEvent(self, event):
+        """支持 Escape 键关闭对话框"""
+        if event.key() == Qt.Key_Escape:
+            if self._exporting:
+                return
+            self.reject()
+        else:
+            super().keyPressEvent(event)
 
 
 def show_export_dialog(questions: List[Dict], homework_title: str = "作业题目", 

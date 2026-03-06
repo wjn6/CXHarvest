@@ -10,16 +10,8 @@ import sys
 import json
 import time
 import re
-import uuid
-import random
-import string
-import tempfile
-import base64
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
-from datetime import datetime
-from urllib.parse import urljoin, urlparse
-from io import BytesIO
 from pathlib import Path
 
 # 导入统一版本号和应用名称
@@ -96,6 +88,9 @@ class PathManager:
         Args:
             filename: 文件名
             subdir: 子目录名（data, logs, cache, config, temp, exports）
+            
+        Raises:
+            ValueError: 如果 filename 包含路径遍历字符
         """
         dir_map = {
             "data": cls.get_data_dir,
@@ -106,7 +101,11 @@ class PathManager:
             "exports": cls.get_exports_dir,
         }
         get_dir = dir_map.get(subdir, cls.get_data_dir)
-        return get_dir() / filename
+        base_dir = get_dir()
+        resolved = (base_dir / filename).resolve()
+        if not str(resolved).startswith(str(base_dir.resolve())):
+            raise ValueError(f"路径遍历检测: {filename}")
+        return resolved
 
 
 # PySide6 核心导入
@@ -241,17 +240,12 @@ def get_question_field(q: Dict, field: str, default=None):
 
 from .exceptions import AppError, LoginError, NetworkError, ParseError
 
-def setup_urllib3_warnings():
-    """禁用urllib3的SSL警告"""
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+def sanitize_filename(filename: str) -> str:
+    """清理文件名中的非法字符（公共工具函数）"""
+    return re.sub(r'[\\/:*?"<>|]', '_', filename)
 
-def ensure_directory(path: str) -> None:
-    """确保目录存在"""
-    if not os.path.exists(path):
-        os.makedirs(path, exist_ok=True)
-
-def safe_json_load(file_path: str, default=None) -> Any:
-    """安全加载JSON文件"""
+def safe_json_load(file_path, default=None) -> Any:
+    """安全加载JSON文件（接受 str 或 Path）"""
     try:
         if os.path.exists(file_path):
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -261,8 +255,8 @@ def safe_json_load(file_path: str, default=None) -> Any:
         app_logger.error(f"加载JSON文件失败 {file_path}: {e}")
     return default if default is not None else {}
 
-def safe_json_save(data: Any, file_path: str) -> bool:
-    """安全保存JSON文件"""
+def safe_json_save(data: Any, file_path) -> bool:
+    """安全保存JSON文件（接受 str 或 Path）"""
     try:
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -296,12 +290,6 @@ def validate_email(email: str) -> bool:
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(pattern, email))
 
-def get_app_data_dir() -> str:
-    """获取应用数据目录"""
-    data_dir = os.path.join(os.path.expanduser("~"), ".chaoxing_tool")
-    ensure_directory(data_dir)
-    return data_dir
-
 def setup_session() -> requests.Session:
     """创建配置好的requests会话"""
     session = requests.Session()
@@ -309,5 +297,3 @@ def setup_session() -> requests.Session:
     session.verify = True
     return session
 
-# 初始化设置（保留一次即可）
-setup_urllib3_warnings()

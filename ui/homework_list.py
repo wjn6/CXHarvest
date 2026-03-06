@@ -81,11 +81,23 @@ class BatchExportWorker(QThread):
             self.error.emit(str(e))
 
 
+def _parse_homework_status(raw_status: str):
+    """统一解析作业状态，返回 (display_text, color, is_completed, is_expired)"""
+    s = str(raw_status)
+    if "完成" in s or "提交" in s or s == '1':
+        return "已完成", "#27ae60", True, False
+    if "过期" in s or "截止" in s or s == '2':
+        return "已过期", "#95a5a6", False, True
+    if "批阅" in s:
+        return "待批阅", "#f39c12", False, False
+    return "待完成", "#e74c3c", False, False
+
+
 class HomeworkListFluent(QWidget):
     """作业列表页面"""
     homework_selected = Signal(dict)
     back_requested = Signal()
-    login_required = Signal()  # 新增: 需要登录信号
+    login_required = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -96,6 +108,7 @@ class HomeworkListFluent(QWidget):
         self.current_course = None
         self.login_manager = None
         self.load_worker = None
+        self.batch_worker = None
         
         self._init_ui()
     
@@ -188,6 +201,7 @@ class HomeworkListFluent(QWidget):
         value_label.setStyleSheet(f"color: {color};")
         value_label.setAlignment(Qt.AlignCenter)
         value_label.setObjectName(f"stat_value_{label}")
+        card._value_label = value_label
         
         name_label = CaptionLabel(label, card)
         name_label.setAlignment(Qt.AlignCenter)
@@ -357,13 +371,17 @@ class HomeworkListFluent(QWidget):
     def _cleanup_workers(self):
         """清理工作线程"""
         if hasattr(self, 'load_worker') and self.load_worker and self.load_worker.isRunning():
-            self.load_worker.quit()
-            self.load_worker.wait(1000)
+            self.load_worker.blockSignals(True)
+            self.load_worker.wait(3000)
+            if self.load_worker and self.load_worker.isRunning():
+                app_logger.warning("作业加载线程未能在超时内结束")
         self.load_worker = None
         
         if hasattr(self, 'batch_worker') and self.batch_worker and self.batch_worker.isRunning():
-            self.batch_worker.quit()
-            self.batch_worker.wait(1000)
+            self.batch_worker.blockSignals(True)
+            self.batch_worker.wait(3000)
+            if self.batch_worker and self.batch_worker.isRunning():
+                app_logger.warning("批量导出线程未能在超时内结束")
         if hasattr(self, 'batch_worker'):
             self.batch_worker = None
     
@@ -423,18 +441,7 @@ class HomeworkListFluent(QWidget):
             
             # 状态处理
             raw_status = str(homework.get('status', '待完成'))
-            display_status = "待完成"
-            status_color = "#e74c3c"  # 默认红色
-            
-            if "完成" in raw_status or "提交" in raw_status or "1" == raw_status:
-                display_status = "已完成"
-                status_color = "#27ae60"  # 绿色
-            elif "过期" in raw_status or "截止" in raw_status or "2" == raw_status:
-                display_status = "已过期"
-                status_color = "#95a5a6"  # 灰色
-            elif "批阅" in raw_status:
-                 display_status = "待批阅"
-                 status_color = "#f39c12"  # 橙色
+            display_status, status_color, _, _ = _parse_homework_status(raw_status)
             
             status_item = QTableWidgetItem(display_status)
             status_item.setForeground(QColor(status_color))
@@ -464,9 +471,7 @@ class HomeworkListFluent(QWidget):
                 continue
             
             # 状态匹配
-            status = str(hw.get('status', ''))
-            is_completed = "完成" in status or "提交" in status or status == '1'
-            is_expired = "过期" in status or "截止" in status or status == '2'
+            _, _, is_completed, is_expired = _parse_homework_status(hw.get('status', ''))
             
             if status_filter == 1 and (is_completed or is_expired): # 筛选待完成
                 continue
@@ -487,16 +492,19 @@ class HomeworkListFluent(QWidget):
         completed = 0
         
         for hw in self.homework_list:
-            status = str(hw.get('status', ''))
-            if "完成" in status or "提交" in status or status == '1':
+            _, _, is_completed, is_expired = _parse_homework_status(hw.get('status', ''))
+            if is_completed:
                 completed += 1
-            elif not ("过期" in status or "截止" in status or status == '2'):
+            elif not is_expired:
                 pending += 1
         
         # 更新统计卡片
-        self.pending_card.findChild(SubtitleLabel, "stat_value_待完成").setText(str(pending))
-        self.completed_card.findChild(SubtitleLabel, "stat_value_已完成").setText(str(completed))
-        self.total_card.findChild(SubtitleLabel, "stat_value_总计").setText(str(total))
+        if hasattr(self.pending_card, '_value_label'):
+            self.pending_card._value_label.setText(str(pending))
+        if hasattr(self.completed_card, '_value_label'):
+            self.completed_card._value_label.setText(str(completed))
+        if hasattr(self.total_card, '_value_label'):
+            self.total_card._value_label.setText(str(total))
     
     def _update_selection_count(self):
         """更新选中数量"""
@@ -631,6 +639,9 @@ class HomeworkListFluent(QWidget):
         self.empty_container.show()
         
         # 重置统计
-        self.pending_card.findChild(SubtitleLabel, "stat_value_待完成").setText("0")
-        self.completed_card.findChild(SubtitleLabel, "stat_value_已完成").setText("0")
-        self.total_card.findChild(SubtitleLabel, "stat_value_总计").setText("0")
+        if hasattr(self.pending_card, '_value_label'):
+            self.pending_card._value_label.setText("0")
+        if hasattr(self.completed_card, '_value_label'):
+            self.completed_card._value_label.setText("0")
+        if hasattr(self.total_card, '_value_label'):
+            self.total_card._value_label.setText("0")

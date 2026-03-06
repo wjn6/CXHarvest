@@ -82,8 +82,9 @@ class VerificationCodeWorker(QThread):
         # 发送信号请求主线程显示验证码对话框
         self.captcha_needed.emit(session, headers)
         
-        # 等待主线程处理结果
-        self.captcha_event.wait()
+        # 等待主线程处理结果（超时120秒防止永久挂起）
+        if not self.captcha_event.wait(timeout=120):
+            return ""
         return self.captcha_result
         
     def submit_captcha_result(self, code: str):
@@ -692,7 +693,12 @@ class LoginDialogFluent(MessageBoxBase):
         """取消时停止登录线程"""
         if self.login_worker and self.login_worker.isRunning():
             self.login_worker.stop()
-            self.login_worker.wait()
+            self.login_worker.blockSignals(True)
+            self.login_worker.wait(3000)
+        
+        if hasattr(self, 'code_worker') and self.code_worker and self.code_worker.isRunning():
+            self.code_worker.blockSignals(True)
+            self.code_worker.wait(2000)
         
         if self.countdown_timer:
             self.countdown_timer.stop()

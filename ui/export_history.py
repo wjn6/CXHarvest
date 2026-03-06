@@ -112,6 +112,7 @@ class ExportHistoryFluent(QWidget):
         value_label = SubtitleLabel(value, card)
         value_label.setObjectName(f"stat_{title}")
         value_label.setAlignment(Qt.AlignCenter)
+        card._value_label = value_label
         layout.addWidget(value_label)
         
         # 标题
@@ -194,9 +195,12 @@ class ExportHistoryFluent(QWidget):
         stats = self.history_manager.get_statistics()
         
         # 更新统计
-        self.total_card.findChild(SubtitleLabel, "stat_总导出").setText(str(stats["total_exports"]))
-        self.questions_card.findChild(SubtitleLabel, "stat_总题目").setText(str(stats["total_questions"]))
-        self.courses_card.findChild(SubtitleLabel, "stat_涉及课程").setText(str(len(stats["courses"])))
+        if hasattr(self.total_card, '_value_label'):
+            self.total_card._value_label.setText(str(stats["total_exports"]))
+        if hasattr(self.questions_card, '_value_label'):
+            self.questions_card._value_label.setText(str(stats["total_questions"]))
+        if hasattr(self.courses_card, '_value_label'):
+            self.courses_card._value_label.setText(str(len(stats["courses"])))
         
         # 显示历史
         self._display_history(history)
@@ -320,7 +324,7 @@ class ExportHistoryFluent(QWidget):
         
         try:
             if platform.system() == "Windows":
-                subprocess.run(["explorer", "/select,", file_path])
+                subprocess.run(["explorer", f"/select,{file_path}"])
             elif platform.system() == "Darwin":  # macOS
                 subprocess.run(["open", "-R", file_path])
             else:  # Linux

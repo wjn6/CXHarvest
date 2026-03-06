@@ -71,18 +71,20 @@ class ExportOptions:
 class QuestionExporter:
     """题目导出器 - 支持多种格式"""
     
-    def __init__(self, questions: List[Dict], homework_title: str = "作业题目"):
+    def __init__(self, questions: List[Dict], homework_title: str = "作业题目", session=None):
         """
         初始化导出器
         
         Args:
             questions: 题目列表
             homework_title: 作业标题
+            session: 可选的 requests.Session，用于下载需要认证的图片
         """
         self.questions = questions
         self.homework_title = homework_title
         self.options = ExportOptions()
         self._statistics = None
+        self._session = session
     
     def set_options(self, options: ExportOptions):
         """设置导出选项"""
@@ -123,7 +125,7 @@ class QuestionExporter:
                 try:
                     score = float(re.sub(r'[^\d.]', '', str(score_str)))
                     stats['total_score'] += score
-                except:
+                except (ValueError, TypeError):
                     pass
             
             # 统计题型
@@ -187,8 +189,8 @@ class QuestionExporter:
     
     def _sanitize_filename(self, filename: str) -> str:
         """清理文件名中的非法字符"""
-        illegal_chars = r'[\\/:*?"<>|]'
-        return re.sub(illegal_chars, '_', filename)
+        from core.common import sanitize_filename
+        return sanitize_filename(filename)
     
     # ==================== HTML 导出 ====================
     
@@ -503,7 +505,6 @@ class QuestionExporter:
                         
                         # 如果有图片，清理占位符文本
                         if opt_images:
-                            import re
                             content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
                         
                         html += f'                    <li>{self._escape_html(f"{label}. {content}")}'
@@ -618,11 +619,11 @@ class QuestionExporter:
                 width = height = 0
             
             if src:
-                # 如果有原始尺寸则使用，否则使用max限制
+                safe_alt = self._escape_html(alt)
                 if width > 0 and height > 0:
-                    html += f'<img class="question-image" src="{src}" alt="{alt}" width="{width}" height="{height}" style="max-width:100%;" />\n'
+                    html += f'<img class="question-image" src="{src}" alt="{safe_alt}" width="{width}" height="{height}" style="max-width:100%;" />\n'
                 else:
-                    html += f'<img class="question-image" src="{src}" alt="{alt}" style="max-width:600px;" />\n'
+                    html += f'<img class="question-image" src="{src}" alt="{safe_alt}" style="max-width:600px;" />\n'
         
         return html
     
@@ -644,10 +645,15 @@ class QuestionExporter:
                     return base64.b64decode(base64_str)
             
             # URL图片 - 尝试下载
+            # 优先使用认证 session（超星图片需要 cookie）；
+            # 若无 session 则 fallback 到无认证请求（公开图片仍可下载，需认证的会返回 403）
             if src and src.startswith('http'):
                 try:
-                    import requests
-                    response = requests.get(src, timeout=10)
+                    if self._session:
+                        response = self._session.get(src, timeout=10)
+                    else:
+                        import requests
+                        response = requests.get(src, timeout=10)
                     if response.status_code == 200:
                         return response.content
                 except Exception as e:
@@ -1189,7 +1195,6 @@ class QuestionExporter:
                         
                         # 如果有图片，清理占位符文本
                         if opt_images:
-                            import re
                             content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
                         
                         opt_run = opt_para.add_run(f"{label}. {content}")
@@ -1319,7 +1324,7 @@ class QuestionExporter:
                         pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
                         chinese_font_registered = True
                         break
-                    except:
+                    except Exception:
                         continue
             
             if not chinese_font_registered:
@@ -1426,7 +1431,6 @@ class QuestionExporter:
                             
                             # 如果有图片，清理占位符文本
                             if opt_images:
-                                import re
                                 content = re.sub(r'\[图片选项[：:]\s*\d+张\]', '', content).strip()
                             
                             story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;&nbsp;{label}. {content}", normal_style))
@@ -1450,6 +1454,20 @@ class QuestionExporter:
                 
                 if self.options.include_correct_answer:
                     correct_answer = self._get_question_answer(q)
+                    correct_answer_images = get_question_field(q, 'correct_answer_images', [])
+                    if correct_answer and '[图片' in correct_answer:
+                        correct_answer = ''
+                    if correct_answer:
+                        ans_parts.append(f"<font color='#008800'>正确答案: {correct_answer}</font>")
+                
+                if self.options.include_score:
+                    score_val = get_question_field(q, 'score', '')
+                    if score_val:
+                        ans_parts.append(f"<font color='grey'>得分: {score_val}</font>")
+                
+                if ans_parts:
+                    story.append(Paragraph("&nbsp;&nbsp;".join(ans_parts), normal_style))
+                
                 # 嵌入答案图片到PDF
                 if self.options.include_my_answer:
                     my_answer_images = get_question_field(q, 'my_answer_images', [])

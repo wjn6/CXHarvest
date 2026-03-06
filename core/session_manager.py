@@ -126,8 +126,8 @@ class SessionManagerMixin:
                     return False
                 # 保守策略：其它状态也归为无效
                 return False
-            except requests.exceptions.RequestException as re:
-                app_logger.warning("Session轻量校验网络异常", {"error": str(re)})
+            except requests.exceptions.RequestException as req_err:
+                app_logger.warning("Session轻量校验网络异常", {"error": str(req_err)})
                 # 网络暂时异常时，保留 cookie 结果
                 return True
 

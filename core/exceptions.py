@@ -36,27 +36,6 @@ class AppError(Exception):
     def __str__(self):
         return f"{self.error_code}: {self.message}"
 
-def handle_async_exceptions(func):
-    """异步函数的异常处理装饰器"""
-    async def wrapper(*args, **kwargs):
-        try:
-            return await func(*args, **kwargs)
-        except requests.exceptions.ConnectionError as e:
-            raise NetworkError(f"网络连接失败: {e}")
-        except requests.exceptions.Timeout as e:
-            raise NetworkError(f"请求超时: {e}")
-        except requests.exceptions.HTTPError as e:
-            status_code = e.response.status_code if e.response else None
-            if status_code in [401, 403]:
-                raise LoginError(f"身份验证失败 (HTTP {status_code})")
-            else:
-                raise NetworkError(f"HTTP请求失败: {e}")
-        except (json.JSONDecodeError, ValueError) as e:
-            raise ParseError(f"数据解析失败: {e}")
-        except Exception as e:
-            raise AppError(f"未知错误: {e}")
-    
-    return wrapper
 
 class LoginError(AppError):
     """登录相关异常"""
@@ -126,18 +105,18 @@ def handle_exceptions(func):
                 app_logger.info(f"详细信息: {e.details}")
             raise
         except requests.exceptions.RequestException as e:
-            # 网络相关异常
-            raise NetworkError(f"网络请求失败: {str(e)}", details={'original_error': str(e)})
+            app_logger.debug(f"网络异常详情: {e}")
+            raise NetworkError("网络请求失败，请检查网络连接")
         except json.JSONDecodeError as e:
-            # JSON解析异常
-            raise ParseError(f"JSON解析失败: {str(e)}", details={'original_error': str(e)})
+            app_logger.debug(f"JSON解析异常详情: {e}")
+            raise ParseError("数据解析失败")
         except (IOError, OSError) as e:
-            # 文件操作异常
-            raise FileOperationError(f"文件操作失败: {str(e)}", details={'original_error': str(e)})
+            app_logger.debug(f"文件操作异常详情: {e}")
+            raise FileOperationError("文件操作失败")
         except Exception as e:
-            # 其他未预期的异常
-            app_logger.error(f"未预期的错误: {str(e)}")
-            raise AppError(f"未知错误: {str(e)}", "UNKNOWN_ERROR", {'original_error': str(e)})
+            app_logger.error(f"未预期的错误: {type(e).__name__}")
+            app_logger.debug(f"异常详情: {e}")
+            raise AppError("发生未知错误", "UNKNOWN_ERROR")
     return wrapper
 
 def safe_execute(func, default_value=None, error_message="操作失败"):

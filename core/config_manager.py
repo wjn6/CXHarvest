@@ -152,7 +152,7 @@ class ConfigManager:
             for key, value in kwargs.items():
                 if hasattr(self._config, key):
                     setattr(self._config, key, value)
-                    app_logger.info(f" 配置项已更新: {key} = {value}")
+                    app_logger.info(f" 配置项已更新: {key}")
                 else:
                     app_logger.info(f" 未知配置项: {key}")
                     

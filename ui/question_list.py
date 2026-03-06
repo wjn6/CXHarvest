@@ -344,7 +344,8 @@ class QuestionCard(CardWidget):
             img_label.setToolTip("点击查看大图")
             
             # 点击放大
-            img_label.clicked.connect(lambda: self._show_image_preview(original_pixmap))
+            img_label._preview_pixmap = original_pixmap
+            img_label.clicked.connect(lambda _lbl=img_label: self._show_image_preview(_lbl._preview_pixmap))
             
             return img_label
             
@@ -471,6 +472,7 @@ class QuestionListFluent(QWidget):
         value_label.setStyleSheet(f"color: {color};")
         value_label.setAlignment(Qt.AlignCenter)
         value_label.setObjectName(f"stat_{label}")
+        card._value_label = value_label
         
         name_label = CaptionLabel(label, card)
         name_label.setAlignment(Qt.AlignCenter)
@@ -638,8 +640,10 @@ class QuestionListFluent(QWidget):
     def _cleanup_worker(self):
         """清理工作线程"""
         if self.parse_worker and self.parse_worker.isRunning():
-            self.parse_worker.quit()
-            self.parse_worker.wait(1000)
+            self.parse_worker.blockSignals(True)
+            self.parse_worker.wait(3000)
+            if self.parse_worker and self.parse_worker.isRunning():
+                app_logger.warning("题目解析线程未能在超时内结束")
         self.parse_worker = None
     
     def _on_questions_loaded(self, questions: list):
@@ -792,9 +796,12 @@ class QuestionListFluent(QWidget):
         correct = sum(1 for q in self.questions if get_question_field(q, 'is_correct') is True)
         wrong = sum(1 for q in self.questions if get_question_field(q, 'is_correct') is False)
         
-        self.total_label.findChild(SubtitleLabel, "stat_总题数").setText(str(total))
-        self.correct_label.findChild(SubtitleLabel, "stat_正确").setText(str(correct))
-        self.wrong_label.findChild(SubtitleLabel, "stat_错误").setText(str(wrong))
+        if hasattr(self.total_label, '_value_label'):
+            self.total_label._value_label.setText(str(total))
+        if hasattr(self.correct_label, '_value_label'):
+            self.correct_label._value_label.setText(str(correct))
+        if hasattr(self.wrong_label, '_value_label'):
+            self.wrong_label._value_label.setText(str(wrong))
     
     def _update_selection_count(self):
         """更新选中数量"""
@@ -866,6 +873,9 @@ class QuestionListFluent(QWidget):
         self.empty_container.show()
         
         # 重置统计
-        self.total_label.findChild(SubtitleLabel, "stat_总题数").setText("0")
-        self.correct_label.findChild(SubtitleLabel, "stat_正确").setText("0")
-        self.wrong_label.findChild(SubtitleLabel, "stat_错误").setText("0")
+        if hasattr(self.total_label, '_value_label'):
+            self.total_label._value_label.setText("0")
+        if hasattr(self.correct_label, '_value_label'):
+            self.correct_label._value_label.setText("0")
+        if hasattr(self.wrong_label, '_value_label'):
+            self.wrong_label._value_label.setText("0")

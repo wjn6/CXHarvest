@@ -123,12 +123,14 @@ class HomeworkQuestionParser:
     def load_homework_list(self):
         """加载作业列表"""
         try:
-            if not os.path.exists('homework_list.json'):
+            from ..common import PathManager
+            hw_list_path = PathManager.get_file_path("homework_list.json", "data")
+            if not hw_list_path.exists():
                 app_logger.info("未找到 homework_list.json 文件")
                 app_logger.info("   请先在主界面选择课程并查看作业列表")
                 return False
 
-            with open('homework_list.json', 'r', encoding='utf-8') as f:
+            with open(hw_list_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
             if isinstance(data, list):
@@ -403,9 +405,7 @@ class HomeworkQuestionParser:
             return question_info
             
         except Exception as e:
-            app_logger.error(f"提取题目信息失败: {e}")
-            import traceback
-            traceback.print_exc()
+            app_logger.exception(f"提取题目信息失败: {e}", exc=e)
             return None
 
     def parse_homework_questions(self, homework_url, homework_title):
@@ -513,7 +513,6 @@ class HomeworkQuestionParser:
                 section_text = tit_elem.get_text(strip=True)
                 if section_text:
                     # 提取题目数量，如 "一. 单选题（共120题，60分）" -> 120
-                    import re
                     count_match = re.search(r'共(\d+)题', section_text)
                     section_count = int(count_match.group(1)) if count_match else 0
                     expected_total += section_count

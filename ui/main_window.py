@@ -25,6 +25,39 @@ from core.version import __version__, APP_NAME, GITHUB_URL, APP_ICON
 from core.common import PathManager
 
 
+class LoginRestoreWorker(QThread):
+    """登录恢复工作线程（避免阻塞主线程）"""
+    restore_finished = Signal(object, object)
+
+    def run(self):
+        try:
+            from core.login_manager import LoginManager
+
+            login_mgr = LoginManager()
+
+            if not login_mgr.session.cookies:
+                app_logger.info("无保存的登录状态")
+                self.restore_finished.emit(None, None)
+                return
+
+            app_logger.info("正在验证保存的登录状态...")
+
+            user_info = login_mgr.get_user_info()
+            username = user_info.get('name', '')
+
+            if username and username != '学习通用户':
+                app_logger.info(f"登录状态有效，用户: {username}")
+                self.restore_finished.emit(login_mgr, user_info)
+            else:
+                app_logger.info("保存的登录状态已过期，需要重新登录")
+                login_mgr.logout()
+                self.restore_finished.emit(None, None)
+
+        except Exception as e:
+            app_logger.warning(f"恢复登录状态失败: {e}")
+            self.restore_finished.emit(None, None)
+
+
 class MainWindowFluent(FluentWindow):
     """主窗口 - Fluent Design 版本"""
     
@@ -160,7 +193,6 @@ class MainWindowFluent(FluentWindow):
         
         # 题目列表信号
         self.question_list.back_requested.connect(self._back_to_homework)
-        self.question_list.export_requested.connect(self._on_export_requested)
         self.question_list.login_required.connect(self.show_login_dialog)
     
     # ==================== 登录相关 ====================
@@ -180,55 +212,35 @@ class MainWindowFluent(FluentWindow):
         dialog.exec()
     
     def _try_restore_login(self):
-        """尝试恢复保存的登录状态"""
-        try:
-            from core.login_manager import LoginManager
-            
-            # 创建登录管理器（会自动加载保存的cookies）
-            login_mgr = LoginManager()
-            
-            # 检查是否有cookies
-            if not login_mgr.session.cookies:
-                app_logger.info("无保存的登录状态")
-                return
-            
-            app_logger.info("正在验证保存的登录状态...")
-            
-            # 通过网络获取用户信息来验证cookies是否有效
-            user_info = login_mgr.get_user_info()
-            username = user_info.get('name', '')
-            
-            # 必须获取到真实用户名才算登录有效（非默认名称）
-            if username and username != '学习通用户':
-                app_logger.info(f"登录状态有效，用户: {username}")
-                
-                # 恢复登录状态
-                self.login_manager = login_mgr
-                self.user_info = user_info
-                
-                # 更新导航栏显示
-                self.navigationInterface.widget("login").setText(username)
-                
-                # 显示恢复成功消息
-                InfoBar.success(
-                    title="自动登录",
-                    content=f"欢迎回来，{username}",
-                    orient=Qt.Horizontal,
-                    isClosable=True,
-                    position=InfoBarPosition.TOP_RIGHT,
-                    duration=2000,
-                    parent=self
-                )
-                
-                # 强制刷新课程列表（每次获取最新数据）
-                QTimer.singleShot(300, lambda: self.course_list.load_courses(self.login_manager, force_refresh=True))
-            else:
-                app_logger.info("保存的登录状态已过期，需要重新登录")
-                # 清理无效的cookies
-                login_mgr.logout()
-                
-        except Exception as e:
-            app_logger.warning(f"恢复登录状态失败: {e}")
+        """尝试恢复保存的登录状态（异步）"""
+        self._login_restore_worker = LoginRestoreWorker(self)
+        self._login_restore_worker.restore_finished.connect(self._on_login_restored)
+        self._login_restore_worker.start()
+
+    def _on_login_restored(self, login_mgr, user_info):
+        """登录恢复完成回调"""
+        self._login_restore_worker = None
+
+        if login_mgr is None or user_info is None:
+            return
+
+        username = user_info.get('name', '')
+        self.login_manager = login_mgr
+        self.user_info = user_info
+
+        self.navigationInterface.widget("login").setText(username)
+
+        InfoBar.success(
+            title="自动登录",
+            content=f"欢迎回来，{username}",
+            orient=Qt.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP_RIGHT,
+            duration=2000,
+            parent=self
+        )
+
+        QTimer.singleShot(300, lambda: self.course_list.load_courses(self.login_manager, force_refresh=True))
     
     def _on_login_success(self, user_info: dict):
         """登录成功处理"""
@@ -276,6 +288,14 @@ class MainWindowFluent(FluentWindow):
     
     def _logout(self):
         """退出登录"""
+        # 先停止所有页面的后台 worker
+        if hasattr(self.course_list, 'load_worker') and self.course_list.load_worker and self.course_list.load_worker.isRunning():
+            self.course_list.load_worker.blockSignals(True)
+        if hasattr(self.homework_list, '_cleanup_workers'):
+            self.homework_list._cleanup_workers()
+        if hasattr(self.question_list, '_cleanup_worker'):
+            self.question_list._cleanup_worker()
+        
         self.user_info = None
         self.login_manager = None
         self.current_course = None
@@ -348,15 +368,6 @@ class MainWindowFluent(FluentWindow):
         """返回作业列表"""
         self.switchTo(self.homework_list)
     
-    # ==================== 导出相关 ====================
-    
-    def _on_export_requested(self, questions: list):
-        """导出请求处理"""
-        from ui.export_dialog import ExportDialogFluent
-        
-        dialog = ExportDialogFluent(questions, self)
-        dialog.exec()
-    
     # ==================== 工具方法 ====================
     
     def show_message(self, title: str, content: str, msg_type: str = "info"):
@@ -390,6 +401,7 @@ class MainWindowFluent(FluentWindow):
         if hasattr(self, 'state_tooltip') and self.state_tooltip:
             self.state_tooltip.setContent("操作完成" if success else "操作失败")
             self.state_tooltip.setState(success)
+            self.state_tooltip.deleteLater()
             self.state_tooltip = None
     
     # ==================== 快捷键相关 ====================
@@ -498,6 +510,7 @@ class AboutDialog(MessageBoxBase):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.update_worker = None
         
         # ========== 应用信息区域 ==========
         # 标题
@@ -549,13 +562,13 @@ class AboutDialog(MessageBoxBase):
         github_btn.setIcon(FIF.GITHUB)
         self.viewLayout.addWidget(github_btn, alignment=Qt.AlignCenter)
         
-        # QFluentWidgets 链接 (小字)
-        qfluent_label = CaptionLabel("Powered by QFluentWidgets")
-        qfluent_label.setAlignment(Qt.AlignCenter)
-        qfluent_label.setStyleSheet("color: #3498db;")
-        qfluent_label.setCursor(Qt.PointingHandCursor)
-        qfluent_label.mousePressEvent = lambda e: __import__('webbrowser').open('https://qfluentwidgets.com/')
-        self.viewLayout.addWidget(qfluent_label)
+        # QFluentWidgets 链接
+        qfluent_btn = HyperlinkButton(
+            url='https://qfluentwidgets.com/',
+            text='Powered by QFluentWidgets',
+            parent=self
+        )
+        self.viewLayout.addWidget(qfluent_btn, alignment=Qt.AlignCenter)
         
         self.viewLayout.addSpacing(20)
         
@@ -588,7 +601,7 @@ class AboutDialog(MessageBoxBase):
         self.update_status_label.hide()
         
         # 启动异步检查线程
-        self.update_worker = UpdateCheckWorker()
+        self.update_worker = UpdateCheckWorker(self)
         self.update_worker.check_finished.connect(self._on_update_check_finished)
         self.update_worker.start()
     
@@ -616,6 +629,17 @@ class AboutDialog(MessageBoxBase):
             self.update_status_label.setText("已是最新版本")
             self.update_status_label.setStyleSheet("color: #3498db;")
             self.update_status_label.show()
+
+    def hideEvent(self, event):
+        """对话框关闭时清理工作线程"""
+        if self.update_worker and self.update_worker.isRunning():
+            try:
+                self.update_worker.check_finished.disconnect()
+            except RuntimeError:
+                pass
+            self.update_worker.quit()
+            self.update_worker.wait(3000)
+        super().hideEvent(event)
 
 
 class UpdateCheckWorker(QThread):
@@ -708,7 +732,7 @@ class UpdateCheckWorker(QThread):
                 elif p1 < p2:
                     return -1
             return 0
-        except:
+        except (ValueError, TypeError):
             return 0
 
 
@@ -718,6 +742,7 @@ class UpdateInfoDialog(MessageBoxBase):
     def __init__(self, update_info: dict, parent=None):
         super().__init__(parent)
         self.update_info = update_info
+        self.download_worker = None
         
         # 标题
         title = TitleLabel(f"发现新版本 v{update_info['version']}")
@@ -853,7 +878,8 @@ class UpdateInfoDialog(MessageBoxBase):
         # 启动下载线程
         self.download_worker = DownloadWorker(
             self.update_info["download_url"],
-            save_path
+            save_path,
+            parent=self
         )
         self.download_worker.progress_updated.connect(self._on_download_progress)
         self.download_worker.download_finished.connect(self._on_download_finished)
@@ -885,40 +911,62 @@ class UpdateInfoDialog(MessageBoxBase):
             self.progress_label.setText(f"下载失败: {message}")
             self.progress_label.setStyleSheet("color: #e74c3c;")
 
+    def hideEvent(self, event):
+        """关闭时停止下载"""
+        if self.download_worker and self.download_worker.isRunning():
+            self.download_worker.cancel()
+            try:
+                self.download_worker.progress_updated.disconnect()
+                self.download_worker.download_finished.disconnect()
+            except RuntimeError:
+                pass
+            self.download_worker.quit()
+            self.download_worker.wait(3000)
+        super().hideEvent(event)
+
 
 class DownloadWorker(QThread):
     """下载工作线程"""
     progress_updated = Signal(int, str)  # percentage, speed
     download_finished = Signal(bool, str)  # success, message
     
-    def __init__(self, url: str, save_path: str):
-        super().__init__()
+    def __init__(self, url: str, save_path: str, parent=None):
+        super().__init__(parent)
         self.url = url
         self.save_path = save_path
-    
+        self._cancelled = False
+
+    def cancel(self):
+        """取消下载"""
+        self._cancelled = True
+
     def run(self):
         import requests
         import time
-        
+        import os
+
+        tmp_path = self.save_path + ".tmp"
+
         try:
             resp = requests.get(self.url, stream=True, timeout=30)
             total_size = int(resp.headers.get("content-length", 0))
-            
+
             downloaded = 0
             start_time = time.time()
-            
-            with open(self.save_path, "wb") as f:
+
+            with open(tmp_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=8192):
+                    if self._cancelled:
+                        break
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        
-                        # 计算进度和速度
+
                         if total_size > 0:
                             percentage = int(downloaded * 100 / total_size)
                         else:
                             percentage = 0
-                        
+
                         elapsed = time.time() - start_time
                         if elapsed > 0:
                             speed = downloaded / elapsed
@@ -930,10 +978,23 @@ class DownloadWorker(QThread):
                                 speed_str = f"{speed:.0f} B/s"
                         else:
                             speed_str = "计算中..."
-                        
+
                         self.progress_updated.emit(percentage, speed_str)
-            
+
+            if self._cancelled:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                return
+
+            os.replace(tmp_path, self.save_path)
             self.download_finished.emit(True, f"已保存到: {self.save_path}")
-            
+
         except Exception as e:
-            self.download_finished.emit(False, str(e))
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            if not self._cancelled:
+                self.download_finished.emit(False, str(e))

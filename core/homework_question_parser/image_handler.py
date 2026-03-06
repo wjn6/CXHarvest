@@ -10,8 +10,15 @@ import io
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 from PIL import Image
 from ..enterprise_logger import app_logger
+
+ALLOWED_IMAGE_DOMAINS = {
+    'chaoxing.com', 'ananas.chaoxing.com', 'p.ananas.chaoxing.com',
+    's.ananas.chaoxing.com', 'mooc1.chaoxing.com', 'mooc2-ans.chaoxing.com',
+    'photo.chaoxing.com', 'img.chaoxing.com',
+}
 
 
 class ImageHandler:
@@ -51,6 +58,15 @@ class ImageHandler:
             return self.login_manager.session
         return self._session
 
+    def _is_allowed_domain(self, url: str) -> bool:
+        """检查 URL 域名是否在白名单中"""
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname or ''
+            return any(host == d or host.endswith('.' + d) for d in ALLOWED_IMAGE_DOMAINS)
+        except Exception:
+            return False
+
     def _normalize_url(self, url: str) -> str:
         if url.startswith('//'):
             return 'https:' + url
@@ -64,11 +80,17 @@ class ImageHandler:
         if url.startswith('p.ananas.chaoxing.com') or url.startswith('s.ananas.chaoxing.com'):
             return 'https://' + url
 
-        return f"https://p.ananas.chaoxing.com/star3/240_130c/{url}"
+        if url and not url.startswith(('javascript:', 'file:', 'data:')):
+            return f"https://p.ananas.chaoxing.com/star3/240_130c/{url}"
+        return ''
 
     def _download_image(self, url: str) -> Optional[Dict[str, Any]]:
         session = self._get_session()
         if not session:
+            return None
+
+        if not self._is_allowed_domain(url):
+            app_logger.warning(f"图片域名不在白名单中，已跳过: {url[:80]}")
             return None
 
         headers = {**self.headers, 'Referer': 'https://i.chaoxing.com/'}
