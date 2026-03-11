@@ -20,8 +20,9 @@ try:
     from core.enterprise_logger import app_logger
     from core.version import __version__, APP_NAME
 except Exception as e:
-    # 如果核心模块加载失败，写入 fallback 日志
-    err_path = current_dir / "startup_error.txt"
+    # 如果核心模块加载失败，写入 fallback 日志（优先 TEMP，因 Program Files 只读）
+    import os, tempfile
+    err_path = Path(tempfile.gettempdir()) / "CXHarvest_startup_error.txt"
     try:
         with open(err_path, "w", encoding="utf-8") as f:
             f.write(f"核心模块加载失败: {e}\n")
@@ -83,8 +84,9 @@ def main():
         
     except Exception as e:
         app_logger.error(f"程序启动失败: {e}")
-        # 写入 startup_error.txt 方便打包环境排查
-        err_path = current_dir / "startup_error.txt"
+        # 写入错误日志到 TEMP 方便打包环境排查
+        import tempfile
+        err_path = Path(tempfile.gettempdir()) / "CXHarvest_startup_error.txt"
         try:
             with open(err_path, "w", encoding="utf-8") as f:
                 f.write(f"程序启动失败: {e}\n")

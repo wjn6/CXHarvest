@@ -41,9 +41,22 @@ class PathManager:
     
     @classmethod
     def get_data_dir(cls) -> Path:
-        """获取数据主目录（所有运行时数据的根目录）"""
-        data_dir = cls.get_app_root() / "data"
-        data_dir.mkdir(exist_ok=True)
+        """获取数据主目录（所有运行时数据的根目录）
+        
+        打包环境: %LOCALAPPDATA%/CXHarvest（避免 Program Files 写入权限问题）
+        开发环境: 项目根目录/data
+        """
+        if getattr(sys, 'frozen', False):
+            # 打包环境：使用 LOCALAPPDATA，避免 Program Files 写入权限问题
+            local_app = os.environ.get('LOCALAPPDATA', '')
+            if local_app:
+                data_dir = Path(local_app) / "CXHarvest"
+            else:
+                data_dir = Path.home() / "AppData" / "Local" / "CXHarvest"
+        else:
+            # 开发环境：使用项目根目录下的 data/
+            data_dir = cls.get_app_root() / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
     
     @classmethod
