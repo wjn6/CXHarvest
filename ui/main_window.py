@@ -925,7 +925,7 @@ class UpdateInfoDialog(MessageBoxBase):
         self.progress_bar.hide()
         
         if success:
-            self.progress_label.setText("下载完成！")
+            self.progress_label.setText("下载完成！正在打开...")
             self.progress_label.setStyleSheet("color: #27ae60;")
             
             InfoBar.success(
@@ -937,6 +937,15 @@ class UpdateInfoDialog(MessageBoxBase):
                 duration=5000,
                 parent=self.window()
             )
+            
+            # 自动打开下载的文件（安装包）
+            try:
+                import os
+                save_path = self.download_worker.save_path if self.download_worker else None
+                if save_path and os.path.exists(save_path):
+                    os.startfile(save_path)
+            except Exception:
+                pass
         else:
             self.progress_label.setText(f"下载失败: {message}")
             self.progress_label.setStyleSheet("color: #e74c3c;")
