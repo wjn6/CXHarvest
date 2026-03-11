@@ -89,10 +89,18 @@ class PathManager:
     
     @classmethod
     def get_exports_dir(cls) -> Path:
-        """获取默认导出目录"""
-        exports_dir = cls.get_app_root() / "exports"
-        exports_dir.mkdir(exist_ok=True)
-        return exports_dir
+        """获取默认导出目录
+        
+        打包环境: ~/Desktop/CXHarvest_exports（用户可见、有写入权限）
+        开发环境: 项目根目录/exports
+        """
+        if getattr(sys, 'frozen', False):
+            # 打包环境：使用桌面目录，方便用户找到导出文件
+            docs = Path.home() / "Desktop" / "CXHarvest_exports"
+        else:
+            docs = cls.get_app_root() / "exports"
+        docs.mkdir(parents=True, exist_ok=True)
+        return docs
     
     @classmethod
     def get_file_path(cls, filename: str, subdir: str = "data") -> Path:

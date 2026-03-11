@@ -811,6 +811,11 @@ class UpdateInfoDialog(MessageBoxBase):
                 border: 1px solid #ddd;
                 border-radius: 6px;
                 padding: 8px;
+                color: #333333;
+                background-color: #f9f9f9;
+            }
+            TextEdit a {
+                color: #0078d4;
             }
         """)
         self.viewLayout.addWidget(changelog_text)
