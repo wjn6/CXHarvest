@@ -21,9 +21,16 @@ try:
     from core.version import __version__, APP_NAME
 except Exception as e:
     # 如果核心模块加载失败，写入 fallback 日志
-    with open(current_dir / "startup_error.txt", "w", encoding="utf-8") as f:
-        f.write(f"核心模块加载失败: {e}\n")
-        traceback.print_exc(file=f)
+    err_path = current_dir / "startup_error.txt"
+    try:
+        with open(err_path, "w", encoding="utf-8") as f:
+            f.write(f"核心模块加载失败: {e}\n")
+            traceback.print_exc(file=f)
+    except Exception:
+        pass
+    # 同时输出到 stderr（命令行调试用）
+    print(f"核心模块加载失败: {e}", file=sys.stderr)
+    traceback.print_exc()
     sys.exit(1)
 
 
@@ -76,7 +83,14 @@ def main():
         
     except Exception as e:
         app_logger.error(f"程序启动失败: {e}")
-        import traceback
+        # 写入 startup_error.txt 方便打包环境排查
+        err_path = current_dir / "startup_error.txt"
+        try:
+            with open(err_path, "w", encoding="utf-8") as f:
+                f.write(f"程序启动失败: {e}\n")
+                traceback.print_exc(file=f)
+        except Exception:
+            pass
         traceback.print_exc()
         sys.exit(1)
 
