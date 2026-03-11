@@ -123,9 +123,9 @@ class ExportDialog(QDialog):
         self.setFixedSize(800, 620)
         self.setModal(True)
         
-        # 设置无边框窗口
+        # 设置无边框窗口 + 透明背景（实现圆角）
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self._exporting = False
         
         # 用于窗口拖动
@@ -142,13 +142,21 @@ class ExportDialog(QDialog):
         if isDarkTheme():
             self.setStyleSheet("""
                 QDialog { background-color: #2d2d2d; color: #ffffff; }
-                CardWidget { background-color: #2d2d2d; border: none; border-bottom: 1px solid #404040; border-radius: 0px; }
+                CardWidget {
+                    background-color: #383838;
+                    border: 1px solid #454545;
+                    border-radius: 8px;
+                }
                 QLabel { color: #ffffff; }
             """)
         else:
             self.setStyleSheet("""
-                QDialog { background-color: #ffffff; color: #000000; }
-                CardWidget { background-color: #ffffff; border: none; border-bottom: 1px solid #e8e8e8; border-radius: 0px; }
+                QDialog { background-color: #f5f5f5; color: #000000; }
+                CardWidget {
+                    background-color: #ffffff;
+                    border: 1px solid #e2e2e2;
+                    border-radius: 8px;
+                }
                 QLabel { color: #000000; }
             """)
     
@@ -158,19 +166,23 @@ class ExportDialog(QDialog):
         title_bar.setFixedHeight(48)
         title_bar.setObjectName("titleBar")
         
-        # 标题栏样式
+        # 标题栏样式（顶部圆角与窗口匹配）
         if isDarkTheme():
             title_bar.setStyleSheet("""
                 #titleBar {
                     background-color: #1f1f1f;
                     border-bottom: 1px solid #333333;
+                    border-top-left-radius: 12px;
+                    border-top-right-radius: 12px;
                 }
             """)
         else:
             title_bar.setStyleSheet("""
                 #titleBar {
-                    background-color: #f3f3f3;
+                    background-color: #f0f0f0;
                     border-bottom: 1px solid #e0e0e0;
+                    border-top-left-radius: 12px;
+                    border-top-right-radius: 12px;
                 }
             """)
         
@@ -218,6 +230,29 @@ class ExportDialog(QDialog):
         self._drag_pos = None
         super().mouseReleaseEvent(event)
     
+    def paintEvent(self, event):
+        """绘制圆角窗口"""
+        from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 绘制阴影（偏移2px的半透明矩形）
+        shadow_path = QPainterPath()
+        shadow_path.addRoundedRect(2.0, 2.0, self.width() - 2, self.height() - 2, 12, 12)
+        painter.fillPath(shadow_path, QColor(0, 0, 0, 30))
+        
+        # 绘制主体圆角矩形
+        path = QPainterPath()
+        path.addRoundedRect(0.0, 0.0, self.width() - 2, self.height() - 2, 12, 12)
+        
+        if isDarkTheme():
+            painter.fillPath(path, QColor("#2d2d2d"))
+            painter.setPen(QPen(QColor("#454545"), 1))
+        else:
+            painter.fillPath(path, QColor("#f5f5f5"))
+            painter.setPen(QPen(QColor("#d0d0d0"), 1))
+        painter.drawPath(path)
+    
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -229,15 +264,15 @@ class ExportDialog(QDialog):
         # 主内容区域（无滚动，单页紧凑排列）
         content_widget = QWidget(self)
         content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(24, 16, 24, 20)
-        content_layout.setSpacing(4)
+        content_layout.setContentsMargins(20, 12, 20, 16)
+        content_layout.setSpacing(10)
         
         # 导出格式 + HTML模板
         self._create_format_card(content_layout)
         
         # 内容选项 + 格式选项 合并到一行
         options_row = QHBoxLayout()
-        options_row.setSpacing(0)
+        options_row.setSpacing(10)
         self._create_content_options_card(options_row)
         self._create_format_options_card(options_row)
         content_layout.addLayout(options_row)
