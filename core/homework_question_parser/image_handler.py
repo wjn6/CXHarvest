@@ -7,12 +7,14 @@
 
 import base64
 import io
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 from PIL import Image
 from ..enterprise_logger import app_logger
+from ..common import AppConstants
 
 ALLOWED_IMAGE_DOMAINS = {
     'chaoxing.com', 'ananas.chaoxing.com', 'p.ananas.chaoxing.com',
@@ -27,7 +29,7 @@ class ImageHandler:
     def __init__(self, login_manager=None, max_cache_size: int = 100, max_image_size: int = 1024):
         self.login_manager = login_manager
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0'
+            'User-Agent': AppConstants.DEFAULT_HEADERS['User-Agent']
         }
         self.max_cache_size = max_cache_size
         self.max_image_size = max_image_size
@@ -94,8 +96,7 @@ class ImageHandler:
             return None
 
         headers = {**self.headers, 'Referer': 'https://i.chaoxing.com/'}
-        
-        import time
+
         for attempt in range(max_retries):
             try:
                 response = session.get(url, headers=headers, timeout=15)
@@ -268,46 +269,9 @@ class ImageHandler:
         
         return images
     
-    def batch_get_images_as_base64(self, urls):
+    def batch_get_images_as_base64(self, urls, compress: bool = True):
         """批量并行获取图片Base64（用于加速）"""
         results = {}
-        if not urls:
-            return results
-
-        unique_urls = [u for u in dict.fromkeys([u for u in urls if u])]
-        if not unique_urls:
-            return results
-
-        def fetch_one(url):
-            return url, self.get_image_as_base64(url)
-
-        max_workers = min(6, max(1, len(unique_urls)))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(fetch_one, url) for url in unique_urls]
-            for future in as_completed(futures):
-                try:
-                    url, data = future.result()
-                    results[url] = data
-                except Exception:
-                    url = None
-                    try:
-                        url, _ = future.result()
-                    except Exception:
-                        pass
-                    if url is not None:
-                        results[url] = None
-        
-        for url in unique_urls:
-            if url not in results:
-                results[url] = None
-
-        return results
-
-    def process_image_url(self, url: str, compress: bool = True) -> Optional[str]:
-        return self.get_image_as_base64(url, compress=compress)
-
-    def batch_process_images(self, urls, compress: bool = True) -> Dict[str, Optional[str]]:
-        results: Dict[str, Optional[str]] = {}
         if not urls:
             return results
 
@@ -320,21 +284,24 @@ class ImageHandler:
 
         max_workers = min(6, max(1, len(unique_urls)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(fetch_one, url) for url in unique_urls]
-            for future in as_completed(futures):
+            future_to_url = {executor.submit(fetch_one, url): url for url in unique_urls}
+            for future in as_completed(future_to_url):
+                orig_url = future_to_url[future]
                 try:
                     url, data = future.result()
                     results[url] = data
                 except Exception:
-                    url = None
-                    try:
-                        url, _ = future.result()
-                    except Exception:
-                        pass
-                    if url is not None:
-                        results[url] = None
-
+                    results[orig_url] = None
+        
         for url in unique_urls:
             if url not in results:
                 results[url] = None
+
         return results
+
+    def process_image_url(self, url: str, compress: bool = True) -> Optional[str]:
+        return self.get_image_as_base64(url, compress=compress)
+
+    def batch_process_images(self, urls, compress: bool = True) -> Dict[str, Optional[str]]:
+        """批量处理图片（委托给 batch_get_images_as_base64）"""
+        return self.batch_get_images_as_base64(urls, compress=compress)

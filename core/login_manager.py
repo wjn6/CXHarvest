@@ -23,8 +23,7 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
-from PIL import Image
+from Crypto.Util.Padding import pad, unpad
 
 # =============================================================================
 # 项目内部导入
@@ -97,6 +96,43 @@ class LoginManager:
         encrypted = cipher.encrypt(padded_data)
         
         return base64.b64encode(encrypted).decode('utf-8')
+    
+    # -----------------------------------------------------------------
+    # 本地存储加密（与超星传输加密无关，搭配随机 IV 使用）
+    # -----------------------------------------------------------------
+    @staticmethod
+    def _derive_local_key() -> bytes:
+        """派生本地存储专用密钥（基于机器特征，不存在文件中）"""
+        import hashlib, getpass
+        # 使用当前系统用户名 + 固定盐值派生密钥，不同机器不同
+        seed = f"CXHarvest:{getpass.getuser()}:local_enc_salt_v1"
+        return hashlib.sha256(seed.encode('utf-8')).digest()[:16]
+
+    @classmethod
+    def _encrypt_local(cls, plaintext: str) -> str:
+        """使用随机 IV 的 AES-CBC 加密，返回 base64(iv + ciphertext)"""
+        if not plaintext:
+            return ''
+        key = cls._derive_local_key()
+        iv = os.urandom(16)
+        cipher = AES.new(key, AES.MODE_CBC, iv=iv)
+        ct = cipher.encrypt(pad(plaintext.encode('utf-8'), AES.block_size))
+        return base64.b64encode(iv + ct).decode('utf-8')
+
+    @classmethod
+    def _decrypt_local(cls, encoded: str) -> str:
+        """解密 _encrypt_local 产出的密文"""
+        if not encoded:
+            return ''
+        try:
+            raw = base64.b64decode(encoded)
+            iv, ct = raw[:16], raw[16:]
+            key = cls._derive_local_key()
+            cipher = AES.new(key, AES.MODE_CBC, iv=iv)
+            return unpad(cipher.decrypt(ct), AES.block_size).decode('utf-8')
+        except Exception:
+            # 解密失败（可能是旧的明文格式），原样返回
+            return encoded
         
     def login_with_password(self, username, password):
         """使用账号密码登录 - 按照原始login.py的方式"""
@@ -416,10 +452,14 @@ class LoginManager:
                 else:
                     app_logger.error(f"验证码发送失败: {result.get('msg', '未知错误')}")
                     
-                    # 如果失败原因是需要图形验证码，则尝试重新发送
-                    if "验证码" in result.get('msg', '') and not captcha_code:
-                        app_logger.info("需要图形验证码，正在重试...")
-                        return self.send_verification_code(phone, country_code)
+                    # 如果失败原因是需要图形验证码，则尝试重新发送（最多1次）
+                    if "验证码" in result.get('msg', '') and not captcha_code and not getattr(self, '_sms_retry', False):
+                        self._sms_retry = True
+                        app_logger.info("需要图形验证码，正在重试(1/1)...")
+                        try:
+                            return self.send_verification_code(phone, country_code)
+                        finally:
+                            self._sms_retry = False
             except Exception as e:
                 app_logger.error(f"请求失败: {e}")
             
@@ -620,6 +660,11 @@ class LoginManager:
             session_path = PathManager.get_file_path("session.txt", "data")
             if session_path.exists():
                 session_path.unlink()
+            
+            # 清理登录信息文件
+            login_path = PathManager.get_file_path("login_info.json", "data")
+            if login_path.exists():
+                login_path.unlink()
                 
             # 清理session cookies
             self.session.cookies.clear()
@@ -633,23 +678,33 @@ class LoginManager:
             return False
             
     def save_login_info(self, info):
-        """保存登录信息"""
+        """保存登录信息（密码字段加密后存储）"""
         try:
             from .common import PathManager
+            # 加密敏感字段后再写入磁盘
+            safe_info = dict(info)
+            if 'password' in safe_info and safe_info['password']:
+                safe_info['password'] = self._encrypt_local(safe_info['password'])
+                safe_info['_encrypted'] = True  # 标记已加密
             login_path = PathManager.get_file_path("login_info.json", "data")
             with open(login_path, 'w', encoding='utf-8') as f:
-                json.dump(info, f, ensure_ascii=False, indent=2)
+                json.dump(safe_info, f, ensure_ascii=False, indent=2)
         except Exception as e:
             app_logger.error(f"保存登录信息失败: {e}")
             
     def load_login_info(self):
-        """加载登录信息"""
+        """加载登录信息（自动解密密码字段）"""
         try:
             from .common import PathManager
             login_path = PathManager.get_file_path("login_info.json", "data")
             if login_path.exists():
                 with open(login_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    info = json.load(f)
+                # 如果有加密标记，解密密码
+                if info.get('_encrypted') and 'password' in info:
+                    info['password'] = self._decrypt_local(info['password'])
+                    del info['_encrypted']  # 返回给调用方时不需要此标记
+                return info
         except Exception as e:
             app_logger.error(f"加载登录信息失败: {e}")
         return {}

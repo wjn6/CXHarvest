@@ -51,6 +51,10 @@ jobs:
             exit 1
           }
 
+      - name: Smoke test (compile check)
+        shell: pwsh
+        run: python -m compileall -q .
+
       - name: Build app (PyInstaller onedir)
         shell: pwsh
         run: |

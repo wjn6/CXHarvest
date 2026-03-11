@@ -28,8 +28,9 @@ class HomeworkQuestionParser:
         self.login_manager = login_manager
         self.homework_list = []
         self.all_questions = []
+        from core.common import AppConstants
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0'
+            'User-Agent': AppConstants.DEFAULT_HEADERS['User-Agent']
         }
         
         # 初始化子模块
@@ -652,10 +653,12 @@ class HomeworkQuestionParser:
             return False
             
         try:
+            from core.common import PathManager, sanitize_filename
             # 生成安全的文件名
-            safe_title = homework_title.replace('/', '_').replace('\\', '_').replace(':', '_')
+            safe_title = sanitize_filename(homework_title)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f'homework_questions_{safe_title}_{timestamp}.json'
+            filepath = PathManager.get_exports_dir() / filename
 
             # 统计信息
             stats = {
@@ -699,11 +702,11 @@ class HomeworkQuestionParser:
                 'questions': questions
             }
 
-            with open(filename, 'w', encoding='utf-8') as f:
+            with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(output_data, f, ensure_ascii=False, indent=2)
 
-            app_logger.info(f"题目数据已保存到: {filename}")
-            app_logger.info(f"文件大小: {os.path.getsize(filename) / 1024 / 1024:.2f} MB")
+            app_logger.info(f"题目数据已保存到: {filepath}")
+            app_logger.info(f"文件大小: {os.path.getsize(filepath) / 1024 / 1024:.2f} MB")
             
             # 打印统计信息
             app_logger.info("解析统计:")

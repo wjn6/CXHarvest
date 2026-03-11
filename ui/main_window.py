@@ -42,15 +42,22 @@ class LoginRestoreWorker(QThread):
 
             app_logger.info("正在验证保存的登录状态...")
 
-            user_info = login_mgr.get_user_info()
-            username = user_info.get('name', '')
+            try:
+                user_info = login_mgr.get_user_info()
+                username = user_info.get('name', '')
 
-            if username and username != '学习通用户':
-                app_logger.info(f"登录状态有效，用户: {username}")
-                self.restore_finished.emit(login_mgr, user_info)
-            else:
-                app_logger.info("保存的登录状态已过期，需要重新登录")
-                login_mgr.logout()
+                if username and username != '学习通用户':
+                    # valid — 恢复登录
+                    app_logger.info(f"登录状态有效，用户: {username}")
+                    self.restore_finished.emit(login_mgr, user_info)
+                else:
+                    # invalid — 确实过期，清除本地 session
+                    app_logger.info("保存的登录状态已过期，需要重新登录")
+                    login_mgr.logout()
+                    self.restore_finished.emit(None, None)
+            except Exception:
+                # indeterminate — 网络/解析异常，保留本地 session 不删除
+                app_logger.warning("无法验证登录状态（网络异常），保留本地 session")
                 self.restore_finished.emit(None, None)
 
         except Exception as e:
@@ -295,6 +302,13 @@ class MainWindowFluent(FluentWindow):
             self.homework_list._cleanup_workers()
         if hasattr(self.question_list, '_cleanup_worker'):
             self.question_list._cleanup_worker()
+        
+        # 调用后端登出：清除磁盘上的 session 和 login_info
+        if self.login_manager:
+            try:
+                self.login_manager.logout()
+            except Exception as e:
+                app_logger.warning(f"后端登出失败: {e}")
         
         self.user_info = None
         self.login_manager = None
@@ -696,6 +710,15 @@ class UpdateCheckWorker(QThread):
                     download_size = best_asset.get("size", 0)
                     download_name = best_asset.get("name", "")
                 
+                # 查找对应的 .sha256 校验文件
+                sha256_url = None
+                if download_name:
+                    sha256_name = download_name + ".sha256"
+                    for asset in assets:
+                        if asset.get("name", "") == sha256_name:
+                            sha256_url = asset.get("browser_download_url")
+                            break
+                
                 self.check_finished.emit({
                     "has_update": has_update,
                     "version": latest_version,
@@ -704,6 +727,7 @@ class UpdateCheckWorker(QThread):
                     "download_url": download_url,
                     "download_name": download_name,
                     "download_size": download_size,
+                    "sha256_url": sha256_url,
                     "changelog": data.get("body", "暂无更新说明"),
                     "published_at": data.get("published_at", ""),
                     "name": data.get("name", f"v{latest_version}")
@@ -879,6 +903,7 @@ class UpdateInfoDialog(MessageBoxBase):
         self.download_worker = DownloadWorker(
             self.update_info["download_url"],
             save_path,
+            sha256_url=self.update_info.get("sha256_url"),
             parent=self
         )
         self.download_worker.progress_updated.connect(self._on_download_progress)
@@ -926,14 +951,15 @@ class UpdateInfoDialog(MessageBoxBase):
 
 
 class DownloadWorker(QThread):
-    """下载工作线程"""
+    """下载工作线程（含 HTTP 状态校验 + SHA256 验证）"""
     progress_updated = Signal(int, str)  # percentage, speed
     download_finished = Signal(bool, str)  # success, message
     
-    def __init__(self, url: str, save_path: str, parent=None):
+    def __init__(self, url: str, save_path: str, sha256_url: str = None, parent=None):
         super().__init__(parent)
         self.url = url
         self.save_path = save_path
+        self.sha256_url = sha256_url
         self._cancelled = False
 
     def cancel(self):
@@ -944,15 +970,18 @@ class DownloadWorker(QThread):
         import requests
         import time
         import os
+        import hashlib
 
         tmp_path = self.save_path + ".tmp"
 
         try:
             resp = requests.get(self.url, stream=True, timeout=30)
+            resp.raise_for_status()  # 检查 HTTP 状态码
             total_size = int(resp.headers.get("content-length", 0))
 
             downloaded = 0
             start_time = time.time()
+            sha256_hash = hashlib.sha256()
 
             with open(tmp_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=8192):
@@ -960,6 +989,7 @@ class DownloadWorker(QThread):
                         break
                     if chunk:
                         f.write(chunk)
+                        sha256_hash.update(chunk)
                         downloaded += len(chunk)
 
                         if total_size > 0:
@@ -988,9 +1018,33 @@ class DownloadWorker(QThread):
                     pass
                 return
 
+            # SHA256 校验（如果有校验文件 URL）
+            if self.sha256_url:
+                try:
+                    sha_resp = requests.get(self.sha256_url, timeout=15)
+                    sha_resp.raise_for_status()
+                    # 格式: "hash  filename"
+                    expected_hash = sha_resp.text.strip().split()[0].lower()
+                    actual_hash = sha256_hash.hexdigest().lower()
+                    if expected_hash != actual_hash:
+                        os.remove(tmp_path)
+                        self.download_finished.emit(False, f"SHA256 校验失败，文件可能已损坏")
+                        return
+                except Exception as sha_err:
+                    # 校验文件获取失败不阻断下载，仅警告
+                    from core.enterprise_logger import app_logger
+                    app_logger.warning(f"SHA256 校验跳过: {sha_err}")
+
             os.replace(tmp_path, self.save_path)
             self.download_finished.emit(True, f"已保存到: {self.save_path}")
 
+        except requests.exceptions.HTTPError as e:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            if not self._cancelled:
+                self.download_finished.emit(False, f"下载失败 (HTTP {e.response.status_code})")
         except Exception as e:
             try:
                 os.remove(tmp_path)

@@ -71,9 +71,9 @@
 
 ### 📥 下载发布版（推荐）
 
-1. 前往 **[Releases](https://github.com/wjn6/CXHarvest/releases)** 下载最新版
-2. 解压压缩包
-3. 双击运行 `超星收割机.exe`
+1. 前往 **[Releases](https://github.com/wjn6/CXHarvest/releases)** 下载最新 Setup 安装包
+2. 运行安装程序，按提示完成安装
+3. 从开始菜单或桌面快捷方式启动
 
 > [!TIP]
 > 发布版已打包所有依赖，**无需安装 Python 环境**
@@ -125,6 +125,7 @@ python main.py
 - **搜索筛选**: 按课程名/教师名/题型/正确性筛选
 - **批量操作**: 全选/只选正确/只选错误
 - **主题切换**: 深色/浅色主题（自动保存）
+- **应用内更新**: 自动检查 + SHA256 校验下载
 
 </details>
 
@@ -140,12 +141,13 @@ python main.py
 | 网络 | requests + urllib3 |
 | 解析 | BeautifulSoup4 |
 | 导出 | python-docx, reportlab, openpyxl |
+| 加密 | pycryptodome (AES-CBC) |
 
 ### 项目结构
 
 ```
 ├── ui/                          # 界面组件
-│   ├── main_window.py           # 主窗口（快捷键）
+│   ├── main_window.py           # 主窗口（快捷键 + 应用内更新）
 │   ├── login_dialog.py          # 登录对话框
 │   ├── course_list.py           # 课程列表（搜索高亮）
 │   ├── homework_list.py         # 作业列表（表格排序）
@@ -155,30 +157,59 @@ python main.py
 │   ├── common.py                # 通用工具（PathManager）
 │   ├── config_manager.py        # 配置管理
 │   ├── enterprise_logger.py     # 日志系统
-│   ├── login_manager.py         # 登录管理
+│   ├── login_manager.py         # 登录管理（凭据加密存储）
 │   ├── course_manager.py        # 课程管理
-│   └── export_manager.py        # 导出管理
+│   └── homework_manager.py      # 作业管理
+├── core/homework_question_parser/  # 题目解析
+│   ├── parser.py                # 主解析器
+│   ├── content_extractor.py     # 内容提取
+│   └── image_handler.py         # 图片处理
+├── installer/                   # Inno Setup 安装脚本
 ├── data/                        # 数据缓存
 ├── logs/                        # 日志输出
 ├── exports/                     # 导出文件
 ├── main.py                      # 程序入口
+├── build.py                     # PyInstaller 打包脚本
 └── requirements.txt             # 依赖列表
 ```
 
 ### 构建发布版
 
 ```bash
-pyinstaller --onedir --noconsole --name "超星收割机" main.py \
-  --add-data "README.md;." \
-  --add-data "assets;assets" \
-  --collect-all qfluentwidgets
+# 使用打包脚本（推荐）
+python build.py
+
+# 快速重复打包（跳过 clean）
+python build.py --no-clean
 ```
 
-> 说明: GitHub Actions 已支持自动生成 `Setup.exe`，本地命令用于手动调试构建。
+> 说明: 推送 `v*.*.*` 格式的 tag 后，GitHub Actions 会自动构建 Setup 安装包并发布 Release。
 
 ---
 
 ## 📋 更新日志
+
+### v2.8.3 - 2026.03
+
+| 类型 | 更新内容 |
+|:----:|----------|
+| 🔒 安全 | 登录凭据加密存储（AES-CBC + 随机 IV + 机器派生密钥） |
+| 🔒 安全 | 修复短信验证码发送无限递归风险 |
+| 🔒 安全 | 退出登录时完整清除所有本地凭据 |
+| 🔧 优化 | 统一全局 User-Agent，修改一处全局生效 |
+| 🔧 优化 | 合并 image_handler 重复批处理代码 |
+| 🔧 优化 | 题目文件保存路径修正为 exports/ 目录 |
+| 🐛 修复 | 课程列表/作业列表/题目列表空状态显示异常 |
+| 🐛 修复 | 导出取消后不再显示虚假成功消息 |
+| 🐛 修复 | 导出使用 .tmp 安全写入防止文件损坏 |
+| 🐛 修复 | 更新下载增加 HTTP 状态校验 + SHA256 完整性验证 |
+
+<details>
+<summary><b>历史版本</b></summary>
+
+### v2.8.1 - 2026.02
+- 应用内更新适配 Setup EXE 安装包
+- CI/CD 自动构建 + Inno Setup 打包
 
 ### v2.1.0 - 2026.01
 
@@ -188,9 +219,6 @@ pyinstaller --onedir --noconsole --name "超星收割机" main.py \
 | ✨ 新增 | 表格排序、搜索高亮、进度条指示 |
 | 🔧 优化 | 统一登录提示、日志系统（毫秒+行号+轮转） |
 | 🔧 优化 | PathManager 集中管理输出路径 |
-
-<details>
-<summary><b>历史版本</b></summary>
 
 ### v2.0.0
 - 全新 Fluent Design 界面

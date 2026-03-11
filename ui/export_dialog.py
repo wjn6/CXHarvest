@@ -30,9 +30,10 @@ from core.export_history import get_export_history_manager
 
 
 class ExportWorker(QThread):
-    """导出工作线程（支持取消）"""
+    """导出工作线程（支持取消 + .tmp 安全写入）"""
     progress = Signal(str, int)
     finished = Signal(dict)
+    cancelled = Signal(dict)   # 取消时发出，携带已完成部分
     error = Signal(str)
     
     def __init__(self, exporter: QuestionExporter, output_dir: str, 
@@ -68,17 +69,36 @@ class ExportWorker(QThread):
             for i, fmt in enumerate(self.formats):
                 if self._cancelled:
                     self.progress.emit("导出已中断", int((i / total) * 100))
-                    break
+                    self.cancelled.emit(results)
+                    return
                 
                 self.progress.emit(f"正在导出 {fmt.upper()}...", int((i / total) * 100))
                 ext = fmt_ext.get(fmt, f'.{fmt}')
                 export_fn = fmt_func.get(fmt)
                 if export_fn:
-                    path = os.path.join(self.output_dir, f"{self.base_name}{ext}")
-                    if fmt == 'html':
-                        results[fmt] = export_fn(path, template_id=self.html_template_id)
-                    else:
-                        results[fmt] = export_fn(path)
+                    final_path = os.path.join(self.output_dir, f"{self.base_name}{ext}")
+                    tmp_path = final_path + ".tmp"
+                    try:
+                        if fmt == 'html':
+                            ok = export_fn(tmp_path, template_id=self.html_template_id)
+                        else:
+                            ok = export_fn(tmp_path)
+                        if ok and os.path.exists(tmp_path):
+                            os.replace(tmp_path, final_path)
+                            results[fmt] = True
+                        else:
+                            # 导出函数可能直接写到了 tmp_path 但返回 falsy
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
+                            results[fmt] = False
+                    except Exception as fmt_err:
+                        if os.path.exists(tmp_path):
+                            try:
+                                os.remove(tmp_path)
+                            except OSError:
+                                pass
+                        results[fmt] = False
+                        app_logger.warning(f"导出 {fmt} 失败: {fmt_err}")
             
             self.progress.emit("导出完成", 100)
             self.finished.emit(results)
@@ -625,6 +645,7 @@ class ExportDialog(QDialog):
         self.export_worker = ExportWorker(exporter, output_dir, formats, base_name, html_template_id)
         self.export_worker.progress.connect(self._on_progress)
         self.export_worker.finished.connect(self._on_export_finished)
+        self.export_worker.cancelled.connect(self._on_export_cancelled)
         self.export_worker.error.connect(self._on_export_error)
         self.export_worker.start()
     
@@ -639,6 +660,19 @@ class ExportDialog(QDialog):
         self.cancel_btn.setText("取消")
         self._exporting = False
         
+        # 防护：空 results 不算成功
+        if not results:
+            InfoBar.warning(
+                title="导出未完成",
+                content="没有任何文件被导出",
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+            return
+        
         # 统计结果
         success_count = sum(1 for v in results.values() if v)
         total_count = len(results)
@@ -647,7 +681,7 @@ class ExportDialog(QDialog):
             # 保存导出历史记录
             self._save_export_history(results)
         
-        if success_count == total_count:
+        if success_count == total_count and total_count > 0:
             InfoBar.success(
                 title="导出成功",
                 content=f"已成功导出 {success_count} 个文件到 {self.path_edit.text()}",
@@ -674,6 +708,30 @@ class ExportDialog(QDialog):
                 duration=5000,
                 parent=self
             )
+    
+    def _on_export_cancelled(self, results: dict):
+        """导出被取消"""
+        self.progress_container.hide()
+        self.export_btn.setEnabled(True)
+        self.cancel_btn.setText("取消")
+        self.cancel_btn.setEnabled(True)
+        self._exporting = False
+        
+        success_count = sum(1 for v in results.values() if v)
+        total_formats = len(self._get_selected_formats())
+        
+        if success_count > 0:
+            self._save_export_history(results)
+        
+        InfoBar.warning(
+            title="导出已取消",
+            content=f"已取消，已完成 {success_count}/{total_formats} 个文件",
+            orient=Qt.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=5000,
+            parent=self
+        )
     
     def _on_export_error(self, error_msg: str):
         """导出错误"""

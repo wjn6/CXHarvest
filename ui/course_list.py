@@ -103,9 +103,10 @@ class ImageLoadWorker(QThread):
                     self.image_loaded.emit(IMAGE_CACHE[self.url], self.url)
                     return
 
+            from core.common import AppConstants
             import requests
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': AppConstants.DEFAULT_HEADERS['User-Agent'],
                 'Referer': 'https://chaoxing.com/'
             }
             response = requests.get(self.url, headers=headers, timeout=10)
@@ -641,7 +642,8 @@ class CourseListFluent(QWidget):
             self.loading_container.show()
         else:
             self.loading_container.hide()
-            self.scroll_area.show()
+            # 不在这里决定显示 scroll_area 还是 empty_container
+            # 由 _display_courses() / _on_courses_loaded() 负责
     
     def clear_data(self):
         """清空数据"""

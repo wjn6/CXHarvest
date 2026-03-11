@@ -869,7 +869,8 @@ class QuestionListFluent(QWidget):
             self.loading_container.show()
         else:
             self.loading_container.hide()
-            self.scroll_area.show()
+            # 不在这里决定显示 scroll_area 还是 empty_container
+            # 由 _display_questions() / _on_questions_loaded() 负责
     
     def clear_data(self):
         """清空数据"""

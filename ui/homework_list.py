@@ -622,7 +622,8 @@ class HomeworkListFluent(QWidget):
             self.loading_container.show()
         else:
             self.loading_container.hide()
-            self.table.show()
+            # 不在这里决定显示 table 还是 empty_container
+            # 由 _display_homework() / _on_homework_loaded() 负责
     
     def clear_data(self):
         """清空数据"""
