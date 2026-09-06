@@ -420,10 +420,36 @@ class HomeworkManager(SessionManagerMixin):
         for selector in selectors:
             containers = soup.select(selector)
             if containers:
-                app_logger.info(f" 使用选择器找到容器: {selector}")
-                return containers
+                # 过滤非作业装饰元素（进度条/图标/焦点框等，不含 URL 特征）
+                valid = [c for c in containers if self._is_real_homework_container(c)]
+                if valid:
+                    app_logger.info(f" 使用选择器找到容器: {selector} ({len(valid)} 个)")
+                    return valid
 
         return []
+
+    @staticmethod
+    def _is_real_homework_container(container) -> bool:
+        """判断容器是否为真实作业项（排除 work-progress-box 进度条等装饰元素）
+
+        无作业课程页面仅含 work-progress-box(0/0) 进度条，
+        此前被 [class*="work"] 兜底误判为作业，导致生成"空作业"。
+        """
+        cls = " ".join(container.get("class") or []) + " " + (container.get("id") or "")
+        # 明确的装饰类：进度条/焦点框/图标等
+        if any(k in cls for k in ("work-progress-box", "workFocus", "work-icon", "work-bg",
+                                  "work-line", "work-item-icon")):
+            return False
+        # 真实作业特征：data/onclick 属性、作业链接
+        if container.get("data") or container.get("onclick"):
+            return True
+        if container.find("a", href=True):
+            return True
+        # 纯进度文本（如 0/0、4/4）不算作业
+        text = container.get_text(" ", strip=True)
+        if text and len(text) > 2 and not re.fullmatch(r'\s*\d+\s*/\s*\d+\s*', text):
+            return True
+        return False
 
     def is_valid_homework_title(self, title: str) -> bool:
         """验证是否为有效的作业标题

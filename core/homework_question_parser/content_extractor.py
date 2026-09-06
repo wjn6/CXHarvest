@@ -183,6 +183,17 @@ class ContentExtractor:
     def extract_question_text(self, container):
         """提取题目文本 - 多策略增强版"""
         try:
+            # 题目含图时深拷贝容器，将图片替换为占位符文本，保证提取的题目文本不丢图
+            # （OCS 思路：img 转可见文本；不影响原容器后续的选项/图片提取）
+            if container.find('img'):
+                import copy
+                work_container = copy.deepcopy(container)
+                for img in work_container.find_all('img'):
+                    src = img.get('src') or img.get('data-src') or ''
+                    img.replace_with(f' [图片:{src}] ' if src else ' [图片] ')
+            else:
+                work_container = container
+
             # 辅助函数：清洗题目文本
             def clean_text(raw_text):
                 if not raw_text:
@@ -195,7 +206,7 @@ class ContentExtractor:
                 return raw_text.strip()
 
             # ========== 策略1: .mark_name 元素（最常用） ==========
-            mark_name = container.find(class_='mark_name')
+            mark_name = work_container.find(class_='mark_name')
             if mark_name:
                 text = mark_name.get_text(strip=True)
                 text = clean_text(text)
@@ -203,7 +214,7 @@ class ContentExtractor:
                     return text
             
             # ========== 策略2: h3 标题元素（OCS策略） ==========
-            h3_title = container.find('h3')
+            h3_title = work_container.find('h3')
             if h3_title:
                 full_text = h3_title.get_text(strip=True)
                 # 移除开头的题号和题型标记
@@ -214,7 +225,7 @@ class ContentExtractor:
                     return cleaned
             
             # ========== 策略3: .qtContent 元素（保留换行） ==========
-            qt_content = container.find(class_='qtContent')
+            qt_content = work_container.find(class_='qtContent')
             if qt_content:
                 # 使用 separator='\n' 保留换行
                 text = qt_content.get_text(separator='\n').strip()
@@ -226,7 +237,7 @@ class ContentExtractor:
             
             # ========== 策略4: .Zy_TItle / .newZy_TItle 元素 ==========
             for cls in ['Zy_TItle', 'newZy_TItle', 'Cy_TItle']:
-                zy_title = container.find(class_=cls)
+                zy_title = work_container.find(class_=cls)
                 if zy_title:
                     text = zy_title.get_text(strip=True)
                     text = clean_text(text)
@@ -234,7 +245,7 @@ class ContentExtractor:
                         return text
             
             # ========== 策略5: .TiMu 元素 ==========
-            timu = container.find(class_='TiMu')
+            timu = work_container.find(class_='TiMu')
             if timu:
                 text = timu.get_text(strip=True)
                 text = clean_text(text)
@@ -243,7 +254,7 @@ class ContentExtractor:
             
             # ========== 策略6: .stem / .stem_question 元素 ==========
             for cls in ['stem', 'stem_question', 'question-stem']:
-                stem = container.find(class_=cls)
+                stem = work_container.find(class_=cls)
                 if stem:
                     text = stem.get_text(strip=True)
                     text = clean_text(text)
@@ -251,7 +262,7 @@ class ContentExtractor:
                         return text
             
             # ========== 策略7: 从文本行中查找题目 ==========
-            text_content = container.get_text()
+            text_content = work_container.get_text()
             lines = text_content.split('\n')
             for line in lines:
                 line = line.strip()
@@ -281,7 +292,7 @@ class ContentExtractor:
                     return text
             
             # ========== 策略9: 最后尝试 - 取容器前200字符 ==========
-            full_text = container.get_text(strip=True)
+            full_text = work_container.get_text(strip=True)
             if full_text:
                 # 截取前200字符作为题目
                 text = clean_text(full_text[:200])

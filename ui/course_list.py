@@ -24,6 +24,7 @@ from qfluentwidgets import FluentIcon as FIF
 
 from core.enterprise_logger import app_logger
 from core.course_manager import CourseManager
+from ui.worker_lifecycle import retire_worker
 
 # 全局图片缓存（限制大小防止内存溢出）
 IMAGE_CACHE = {}
@@ -441,6 +442,10 @@ class CourseListFluent(QWidget):
     def load_courses(self, login_manager, force_refresh=False):
         """加载课程列表"""
         self.login_manager = login_manager
+        
+        # 安全退役在途加载线程：防止旧结果覆盖新数据 / 运行中线程被回收崩溃
+        if hasattr(self, 'load_worker'):
+            retire_worker(self.load_worker)
         
         # 显示加载状态
         self._set_loading(True)

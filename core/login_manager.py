@@ -30,6 +30,13 @@ from Crypto.Util.Padding import pad, unpad
 # =============================================================================
 from .enterprise_logger import app_logger
 
+class TwoFactorRequired(Exception):
+    """登录触发双因子（安全验证）异常，携带 2FA 页面地址"""
+
+    def __init__(self, url: str):
+        super().__init__("需要双因子安全验证")
+        self.url = url
+
 class LoginManager:
     """登录管理器类"""
     
@@ -138,6 +145,8 @@ class LoginManager:
         """使用账号密码登录 - 按照原始login.py的方式"""
         try:
             app_logger.info("正在初始化会话...")
+            # 主动登录需干净会话：清掉自动加载的旧 cookies，避免新旧混杂导致校验失败
+            self.session.cookies.clear()
             # 获取验证串
             validate = self.get_validate_string()
             app_logger.info(f"获取到验证串: {validate[:10]}***")
@@ -169,6 +178,11 @@ class LoginManager:
             if response.status_code == 200:
                 try:
                     result = response.json()
+                    if result.get('containTwoFactorLogin'):
+                        # 触发双因子安全验证，抛出专用异常交给 UI 层弹窗处理
+                        two_url = result.get('twoFactorLoginUrl', '')
+                        app_logger.info(f"触发双因子安全验证: {two_url}")
+                        raise TwoFactorRequired(two_url)
                     if result.get('status'):
                         app_logger.success("登录成功!")
                         app_logger.info(f"重定向到: {result.get('url')}")
@@ -178,17 +192,151 @@ class LoginManager:
                     else:
                         error_msg = result.get('msg2', '登录失败，请检查用户名和密码')
                         raise Exception(error_msg)
+                except TwoFactorRequired:
+                    raise
                 except Exception as e:
                     app_logger.error(f"解析响应失败: {e}")
                     app_logger.info(f"响应状态: {response.status_code}, 长度: {len(response.text)}")
                     raise Exception("登录失败，请检查用户名和密码")
             else:
                 raise Exception(f"请求失败，状态码: {response.status_code}")
-                    
+
+        except TwoFactorRequired:
+            raise
         except Exception as e:
             app_logger.error(f"登录失败: {e}")
             return False
             
+    @staticmethod
+    def parse_two_factor_params(two_url: str) -> dict:
+        """解析 2FA 地址中的参数（uid/enc/enc2/time/type/fid/loginTimeout）"""
+        return dict(re.findall(r'([^?&=]+)=([^&]*)', two_url or ''))
+
+    def get_two_factor_phone(self, two_url: str) -> str:
+        """从 2FA 页面提取绑定手机号（隐藏域 #phone 或 #msg）"""
+        try:
+            response = self.session.get(f"{self.base_url}{two_url}",
+                                        headers=self.headers, timeout=self._default_timeout)
+            m = (re.search(r'id="phone"[^>]*value="([^"]*)"', response.text)
+                 or re.search(r'value="([^"]*)"[^>]*id="phone"', response.text)
+                 or re.search(r'id="msg"[^>]*value="([^"]*)"', response.text)
+                 or re.search(r'value="([^"]*)"[^>]*id="msg"', response.text))
+            return m.group(1) if m else ''
+        except Exception as e:
+            app_logger.warning(f"提取2FA手机号失败: {e}")
+            return ''
+
+    def two_factor_send_sms(self, phone: str, validate: str) -> dict:
+        """2FA：发送短信验证码（需行为验证码 validate）
+
+        参数与浏览器实际请求保持一致（needcode=false、countrycode 为空）。
+        返回 {'result': bool, 'msg': str}
+        """
+        url = (f"{self.base_url}/num/phonecode?phone={phone}&code=&type=1"
+               f"&needcode=false&countrycode=&validate={validate or ''}")
+        headers = self.headers.copy()
+        headers['Referer'] = f"{self.base_url}/toTwoFactorLogin"
+        response = self.session.get(url, headers=headers, timeout=self._default_timeout)
+        data = response.json()
+        return {'result': bool(data.get('result')), 'msg': data.get('msg', '')}
+
+    def _complete_sso_redirect(self):
+        """2FA 验证成功后，模拟官方页面 window.location = refer 的跳转，完成 SSO 补齐业务域 cookies
+
+        官方 2FA 页面验证成功后跳转到 refer（默认为 http://i.mooc.chaoxing.com），
+        该跳转会经过 passport SSO，在 session 中写入 _uid/UID/lv 等业务域 cookies，
+        缺少这些 cookies 会导致后续课程/作业接口校验失败。
+        """
+        try:
+            url = "http://i.mooc.chaoxing.com"
+            resp = self.session.get(url, headers=self.headers, allow_redirects=True,
+                                    timeout=self._default_timeout)
+            # 再访问一次业务主页，确保 i.chaoxing.com 域 cookies 齐全
+            self.session.get("https://i.chaoxing.com/base", headers=self.headers,
+                             allow_redirects=True, timeout=self._default_timeout)
+            names = sorted({c.name for c in self.session.cookies})
+            app_logger.info(f"2FA 登录后 SSO 跳转完成: {resp.status_code} -> {resp.url}; cookies: {names}")
+        except Exception as e:
+            app_logger.warning(f"2FA 登录后 SSO 跳转失败（不影响已登录状态）: {e}")
+
+    def two_factor_check(self, two_url: str, phone: str, vcode: str) -> dict:
+        """2FA：提交短信验证码完成安全验证，成功后当前 session 即登录态
+
+        返回 {'status': bool, 'mes': str}
+        """
+        p = self.parse_two_factor_params(two_url)
+        url = (f"{self.base_url}/v11/checkmessage?enc2={p.get('enc2', '')}"
+               f"&time={p.get('time', '')}&type={p.get('type', '3')}")
+        # 与浏览器实际提交保持一致：phone/vcode/fid/loginTimeout
+        data = {
+            'phone': phone,
+            'vcode': vcode,
+            'fid': p.get('fid', '-1'),
+            'loginTimeout': p.get('loginTimeout', '1'),
+        }
+        headers = self.headers.copy()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        headers['Referer'] = f"{self.base_url}{two_url}"
+        response = self.session.post(url, data=data, headers=headers, timeout=self._default_timeout)
+        result = response.json()
+        app_logger.info(f"2FA checkmessage 响应: status={result.get('status')} "
+                        f"type={result.get('type')} mes={result.get('mes')}")
+        if result.get('status'):
+            # type=='1' 表示服务端强制要求重置弱密码，由 UI 层引导用户改密后再完成登录
+            if str(result.get('type')) == '1':
+                return {'status': True, 'mes': result.get('mes', ''),
+                        'weak_pwd': True,
+                        'userid': result.get('userid', ''),
+                        'token': result.get('token', '')}
+            # 无需改密：跟随官方 refer 跳转补齐 SSO cookies 后保存
+            self._complete_sso_redirect()
+            self.save_cookies()
+        return {'status': bool(result.get('status')), 'mes': result.get('mes', ''),
+                'weak_pwd': False}
+
+    def two_factor_reset_password(self, userid: str, token: str,
+                                  new_password: str, validate: str) -> dict:
+        """2FA 弱密码重置：POST /v11/updateweakpwd（新密码需 AES 加密）
+
+        成功后跟随 refer 跳转补齐 SSO cookies 并保存。
+        返回 {'status': bool, 'mes': str}
+        """
+        # 先加载改密页建立上下文（与浏览器流程一致）
+        page_url = (f"{self.base_url}/v11/updateweakpwd?uid={userid}&token={token}"
+                    f"&passwordTimeout=1&refer=http%3A%2F%2Fi.mooc.chaoxing.com")
+        try:
+            self.session.get(page_url, headers=self.headers, timeout=self._default_timeout)
+        except Exception:
+            pass
+
+        enc_pwd = self.encrypt_aes(new_password)
+        data = {
+            'pwdValidatorType': '',
+            'token': token,
+            'uid': userid,
+            'oldpwd': '',
+            '_blank': '',
+            'refer': 'http://i.mooc.chaoxing.com',
+            'validate': validate or '',
+            'password': enc_pwd,
+            'password2': enc_pwd,
+        }
+        headers = self.headers.copy()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        headers['Referer'] = page_url
+        headers['X-Requested-With'] = 'XMLHttpRequest'
+        response = self.session.post(f"{self.base_url}/v11/updateweakpwd", data=data,
+                                     headers=headers, timeout=self._default_timeout)
+        try:
+            result = response.json()
+        except Exception:
+            result = {}
+        app_logger.info(f"2FA 弱密码重置响应: status={result.get('status')} mes={result.get('mes')}")
+        if result.get('status'):
+            self._complete_sso_redirect()
+            self.save_cookies()
+        return {'status': bool(result.get('status')), 'mes': result.get('mes', '')}
+
     def get_qrcode_params(self):
         """获取二维码登录参数 - 从登录页面提取uuid和enc"""
         try:
@@ -533,6 +681,33 @@ class LoginManager:
             pass
         
         return ""
+
+    def is_session_valid(self):
+        """轻量校验保存的登录状态是否有效（不依赖用户名解析）
+
+        请求 i.chaoxing.com/base（禁止重定向）：
+        - 200 且不含登录页特征 -> 已登录，返回 True
+        - 302/登录页特征         -> 已过期，返回 False
+        - 网络异常               -> 状态未知，返回 None（调用方应保留本地 session）
+        """
+        try:
+            url = "https://i.chaoxing.com/base"
+            response = self.session.get(url, headers=self.headers,
+                                        allow_redirects=False, timeout=self._default_timeout)
+            if response.status_code == 200:
+                text = response.text
+                if 'passport2.chaoxing.com/login' in text or '<title>用户登录</title>' in text:
+                    app_logger.info("保存的登录状态已过期（base 返回登录页）")
+                    return False
+                return True
+            if response.status_code in (301, 302, 303, 307, 308):
+                app_logger.info("保存的登录状态已过期（base 重定向到登录页）")
+                return False
+            app_logger.warning(f"登录状态校验异常状态码: {response.status_code}")
+            return None
+        except Exception as e:
+            app_logger.warning(f"登录状态校验网络异常: {e}")
+            return None
 
     def check_login_status(self):
         """检查当前登录状态"""

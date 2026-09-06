@@ -18,11 +18,14 @@ from qfluentwidgets import (
     setTheme, Theme
 )
 from qfluentwidgets import FluentIcon as FIF
+import os
+import sys
 import webbrowser
 
 from core.enterprise_logger import app_logger
 from core.version import __version__, APP_NAME, GITHUB_URL, APP_ICON
 from core.common import PathManager
+from ui.worker_lifecycle import retire_worker
 
 
 class LoginRestoreWorker(QThread):
@@ -43,17 +46,20 @@ class LoginRestoreWorker(QThread):
             app_logger.info("正在验证保存的登录状态...")
 
             try:
-                user_info = login_mgr.get_user_info()
-                username = user_info.get('name', '')
-
-                if username and username != '学习通用户':
-                    # valid — 恢复登录
-                    app_logger.info(f"登录状态有效，用户: {username}")
+                # 网络校验：200=已登录，302/登录页=过期，None=网络异常(保留)
+                valid = login_mgr.is_session_valid()
+                if valid:
+                    user_info = login_mgr.get_user_info()
+                    app_logger.info(f"登录状态有效，用户: {user_info.get('name', '')}")
                     self.restore_finished.emit(login_mgr, user_info)
-                else:
-                    # invalid — 确实过期，清除本地 session
+                elif valid is False:
+                    # 明确过期才清除本地 session
                     app_logger.info("保存的登录状态已过期，需要重新登录")
                     login_mgr.logout()
+                    self.restore_finished.emit(None, None)
+                else:
+                    # 网络异常：保留本地 session，下次再试
+                    app_logger.warning("无法验证登录状态（网络异常），保留本地 session")
                     self.restore_finished.emit(None, None)
             except Exception:
                 # indeterminate — 网络/解析异常，保留本地 session 不删除
@@ -295,9 +301,10 @@ class MainWindowFluent(FluentWindow):
     
     def _logout(self):
         """退出登录"""
-        # 先停止所有页面的后台 worker
-        if hasattr(self.course_list, 'load_worker') and self.course_list.load_worker and self.course_list.load_worker.isRunning():
-            self.course_list.load_worker.blockSignals(True)
+        # 先安全退役所有页面的后台 worker，防止运行中 QThread 被回收崩溃
+        if hasattr(self.course_list, 'load_worker'):
+            retire_worker(self.course_list.load_worker)
+            self.course_list.load_worker = None
         if hasattr(self.homework_list, '_cleanup_workers'):
             self.homework_list._cleanup_workers()
         if hasattr(self.question_list, '_cleanup_worker'):
@@ -337,6 +344,18 @@ class MainWindowFluent(FluentWindow):
         )
         
         app_logger.info("用户已退出登录")
+    
+    def closeEvent(self, event):
+        """关闭主窗口时安全退役所有后台线程，防止运行中 QThread 被销毁崩溃"""
+        retire_worker(getattr(self, '_login_restore_worker', None))
+        if hasattr(self, 'course_list'):
+            retire_worker(getattr(self.course_list, 'load_worker', None))
+            self.course_list.load_worker = None
+        if hasattr(self, 'homework_list'):
+            self.homework_list._cleanup_workers()
+        if hasattr(self, 'question_list'):
+            self.question_list._cleanup_worker()
+        super().closeEvent(event)
     
     def _refresh_courses(self):
         """刷新课程列表"""
@@ -645,14 +664,8 @@ class AboutDialog(MessageBoxBase):
             self.update_status_label.show()
 
     def hideEvent(self, event):
-        """对话框关闭时清理工作线程"""
-        if self.update_worker and self.update_worker.isRunning():
-            try:
-                self.update_worker.check_finished.disconnect()
-            except RuntimeError:
-                pass
-            self.update_worker.quit()
-            self.update_worker.wait(3000)
+        """对话框关闭时安全退役工作线程"""
+        retire_worker(self.update_worker)
         super().hideEvent(event)
 
 
@@ -925,7 +938,7 @@ class UpdateInfoDialog(MessageBoxBase):
         self.progress_bar.hide()
         
         if success:
-            self.progress_label.setText("下载完成！正在打开...")
+            self.progress_label.setText("下载完成")
             self.progress_label.setStyleSheet("color: #27ae60;")
             
             InfoBar.success(
@@ -938,29 +951,49 @@ class UpdateInfoDialog(MessageBoxBase):
                 parent=self.window()
             )
             
-            # 自动打开下载的文件（安装包）
-            try:
-                import os
-                save_path = self.download_worker.save_path if self.download_worker else None
-                if save_path and os.path.exists(save_path):
-                    os.startfile(save_path)
-            except Exception:
-                pass
+            # 询问用户是否运行安装程序（不自动执行，避免执行被篡改文件的静默风险）
+            save_path = self.download_worker.save_path if self.download_worker else None
+            if save_path and os.path.exists(save_path):
+                self._ask_run_installer(save_path)
         else:
             self.progress_label.setText(f"下载失败: {message}")
             self.progress_label.setStyleSheet("color: #e74c3c;")
+    
+    def _ask_run_installer(self, save_path: str):
+        """下载完成后询问用户：立即安装 or 打开所在文件夹"""
+        from qfluentwidgets import MessageBox
+        box = MessageBox(
+            "更新包下载完成",
+            f"文件已保存到：\n{save_path}\n\n是否立即运行安装程序？",
+            self.window()
+        )
+        box.yesButton.setText("立即安装")
+        box.cancelButton.setText("打开所在文件夹")
+        if box.exec():
+            try:
+                os.startfile(save_path)
+            except Exception as e:
+                app_logger.warning(f"启动安装程序失败: {e}")
+        else:
+            self._open_in_folder(save_path)
+    
+    @staticmethod
+    def _open_in_folder(save_path: str):
+        """在文件管理器中定位下载的文件"""
+        try:
+            import subprocess
+            if sys.platform == 'win32':
+                subprocess.Popen(f'explorer /select,"{save_path}"')
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', '-R', save_path])
+            else:
+                subprocess.Popen(['xdg-open', save_path])
+        except Exception as e:
+            app_logger.warning(f"打开所在文件夹失败: {e}")
 
     def hideEvent(self, event):
-        """关闭时停止下载"""
-        if self.download_worker and self.download_worker.isRunning():
-            self.download_worker.cancel()
-            try:
-                self.download_worker.progress_updated.disconnect()
-                self.download_worker.download_finished.disconnect()
-            except RuntimeError:
-                pass
-            self.download_worker.quit()
-            self.download_worker.wait(3000)
+        """关闭时安全退役下载线程（cancel 由 retire_worker 协作式触发）"""
+        retire_worker(self.download_worker)
         super().hideEvent(event)
 
 
@@ -1032,7 +1065,7 @@ class DownloadWorker(QThread):
                     pass
                 return
 
-            # SHA256 校验（如果有校验文件 URL）
+            # SHA256 校验（发布版本必须通过校验才允许使用）
             if self.sha256_url:
                 try:
                     sha_resp = requests.get(self.sha256_url, timeout=15)
@@ -1042,12 +1075,18 @@ class DownloadWorker(QThread):
                     actual_hash = sha256_hash.hexdigest().lower()
                     if expected_hash != actual_hash:
                         os.remove(tmp_path)
-                        self.download_finished.emit(False, f"SHA256 校验失败，文件可能已损坏")
+                        self.download_finished.emit(False, "SHA256 校验失败，文件可能已被篡改或损坏")
                         return
                 except Exception as sha_err:
-                    # 校验文件获取失败不阻断下载，仅警告
+                    # 校验文件缺失 / 获取失败：视为不可信，中止下载，不允许静默跳过
                     from core.enterprise_logger import app_logger
-                    app_logger.warning(f"SHA256 校验跳过: {sha_err}")
+                    app_logger.warning(f"SHA256 校验文件获取失败: {sha_err}")
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                    self.download_finished.emit(False, "SHA256 校验文件获取失败，已中止下载以保障安全")
+                    return
 
             os.replace(tmp_path, self.save_path)
             self.download_finished.emit(True, f"已保存到: {self.save_path}")

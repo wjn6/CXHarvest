@@ -22,8 +22,9 @@ import threading
 from qfluentwidgets import FluentIcon as FIF
 
 from core.enterprise_logger import app_logger
-from core.login_manager import LoginManager
+from core.login_manager import LoginManager, TwoFactorRequired
 from core.config_manager import get_config_manager
+from ui.worker_lifecycle import retire_worker
 
 # 尝试导入 IndeterminateProgressPushButton，如果没有则使用兼容实现
 try:
@@ -100,6 +101,7 @@ class LoginWorker(QThread):
     qr_code_ready = Signal(str)
     qr_code_expired = Signal()  # 二维码过期信号
     login_error = Signal(str)
+    two_factor_required = Signal(str, str)  # (two_url, phone)
     
     def __init__(self, login_type: str, login_manager: LoginManager, **kwargs):
         super().__init__()
@@ -115,7 +117,15 @@ class LoginWorker(QThread):
         try:
             if self.login_type == 'password':
                 self.login_progress.emit("正在登录...")
-                result = self.login_manager.login_with_password(self.username, self.password)
+                try:
+                    result = self.login_manager.login_with_password(self.username, self.password)
+                except TwoFactorRequired as e:
+                    if self._stop_requested:
+                        return
+                    # 提取绑定手机号后通知主线程弹出安全验证对话框
+                    phone = self.login_manager.get_two_factor_phone(e.url) or self.username
+                    self.two_factor_required.emit(e.url, phone)
+                    return
             elif self.login_type == 'sms':
                 self.login_progress.emit("正在验证...")
                 result = self.login_manager.login_with_verification_code(self.phone, self.code)
@@ -437,8 +447,27 @@ class LoginDialogFluent(MessageBoxBase):
         self.login_worker.qr_code_ready.connect(self._on_qr_ready)
         self.login_worker.qr_code_expired.connect(self._on_qr_expired)
         self.login_worker.login_error.connect(self._on_login_error)
+        self.login_worker.two_factor_required.connect(self._on_two_factor_required)
         self.login_worker.finished.connect(lambda: self._set_loading(False))
         self.login_worker.start()
+
+    def _on_two_factor_required(self, two_url: str, phone: str):
+        """登录触发双因子验证：弹出原生安全验证对话框"""
+        self._set_loading(False)
+        self.status_label.setText("需要安全验证")
+        self.status_label.setStyleSheet("color: #888888;")
+
+        from ui.two_factor_dialog import TwoFactorDialog
+        dialog = TwoFactorDialog(self._get_login_manager(), two_url, phone, self.window())
+        dialog.verified.connect(self._on_two_factor_verified)
+        dialog.exec()
+
+    def _on_two_factor_verified(self):
+        """安全验证通过：session 已登录，直接走登录成功流程"""
+        manager = self._get_login_manager()
+        user_info = manager.get_user_info()
+        user_info['login_manager'] = manager
+        self._on_login_success(user_info)
     
     def _on_login_success(self, user_info: dict):
         """登录成功"""
@@ -690,15 +719,15 @@ class LoginDialogFluent(MessageBoxBase):
         self.status_label.setStyleSheet("color: #e74c3c;")
     
     def reject(self):
-        """取消时停止登录线程"""
-        if self.login_worker and self.login_worker.isRunning():
-            self.login_worker.stop()
-            self.login_worker.blockSignals(True)
-            self.login_worker.wait(3000)
-        
-        if hasattr(self, 'code_worker') and self.code_worker and self.code_worker.isRunning():
-            self.code_worker.blockSignals(True)
-            self.code_worker.wait(2000)
+        """取消时安全退役登录线程（不阻塞 UI，防止运行中 QThread 被回收崩溃）"""
+        retire_worker(self.login_worker)
+        self.login_worker = None
+        retire_worker(getattr(self, 'code_worker', None))
+        self.code_worker = None
+        # 同时退役切 Tab 时滞留的 pending 线程，防止随对话框销毁而崩溃
+        for worker in list(getattr(self, '_pending_workers', [])):
+            retire_worker(worker)
+        self._pending_workers = []
         
         if self.countdown_timer:
             self.countdown_timer.stop()

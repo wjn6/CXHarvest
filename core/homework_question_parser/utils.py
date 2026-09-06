@@ -128,13 +128,18 @@ def clean_text(text):
 
 def get_text_content(element):
     """
-    获取纯文本内容（去除图片标签）
+    获取纯文本内容（图片替换为占位符，保证含图题目/选项文本不丢图）
     对应JS的 getTextContent 方法
     """
     if not element:
         return ''
-    
-    # 将图片替换为占位符
+
     text = element.get_text(separator=' ', strip=True)
-    
+
+    # 图片替换为占位符（OCS 思路：img 转可见文本；格式与导出层清理正则 [图片:xxx] 兼容）
+    img_count = len(element.find_all('img'))
+    if img_count:
+        placeholder = f" [图片:{img_count}]"
+        text = (text + placeholder) if text else placeholder.strip()
+
     return clean_text(text)

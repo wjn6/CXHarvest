@@ -54,6 +54,9 @@ htmlcov/
 *.tmp
 *.bak
 
+# ========== 本地集成测试脚本与凭据（不提交 GitHub） ==========
+tests/
+
 # ========== 安装包产物 ==========
 installer/*.exe
 installer/*.sha256

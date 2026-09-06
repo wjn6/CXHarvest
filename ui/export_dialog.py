@@ -27,6 +27,7 @@ from qfluentwidgets import FluentIcon as FIF
 from core.enterprise_logger import app_logger
 from core.question_exporter import QuestionExporter, ExportOptions
 from core.export_history import get_export_history_manager
+from ui.worker_lifecycle import retire_worker
 
 
 class ExportWorker(QThread):
@@ -842,6 +843,16 @@ class ExportDialog(QDialog):
             self.cancel_btn.setText("正在中断...")
         else:
             self.reject()
+
+    def reject(self):
+        """关闭对话框：若正在导出则先取消并安全退役导出线程
+
+        避免导出中点击标题栏关闭按钮时，运行中的 ExportWorker 随对话框被回收而崩溃。
+        """
+        if getattr(self, '_exporting', False) and getattr(self, 'export_worker', None) \
+                and self.export_worker.isRunning():
+            retire_worker(self.export_worker)
+        super().reject()
 
     def keyPressEvent(self, event):
         """支持 Escape 键关闭对话框"""

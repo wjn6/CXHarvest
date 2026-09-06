@@ -75,6 +75,19 @@ def main():
         window = MainWindowFluent()
         window.show()
         
+        # 预热 WebEngine：避免 2FA 点选验证码弹窗首次创建渲染进程时界面闪屏
+        try:
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+            from PySide6.QtCore import QTimer
+            _warm_view = QWebEngineView()
+            _warm_view.setAttribute(Qt.WA_DontShowOnScreen, True)
+            _warm_view.setHtml("<html><body></body></html>")
+            _warm_view.show()  # 离屏 show 才会真正拉起渲染进程
+            app._cx_webengine_warm = _warm_view  # 保持引用防止回收
+            QTimer.singleShot(3000, _warm_view.deleteLater)
+        except Exception as e:
+            app_logger.debug(f"WebEngine 预热跳过: {e}")
+        
         sys.exit(app.exec())
         
     except ImportError as e:

@@ -41,6 +41,7 @@ from core.homework_question_parser import HomeworkQuestionParser
 from core.common import get_question_field
 from ui.export_dialog import show_export_dialog
 from ui.image_preview import ImagePreviewDialog, ClickableImageLabel
+from ui.worker_lifecycle import retire_worker
 
 
 class QuestionParseWorker(QThread):
@@ -652,12 +653,8 @@ class QuestionListFluent(QWidget):
         self.parse_worker.start()
     
     def _cleanup_worker(self):
-        """清理工作线程"""
-        if self.parse_worker and self.parse_worker.isRunning():
-            self.parse_worker.blockSignals(True)
-            self.parse_worker.wait(3000)
-            if self.parse_worker and self.parse_worker.isRunning():
-                app_logger.warning("题目解析线程未能在超时内结束")
+        """清理工作线程（安全退役，不阻塞 UI，防止运行中 QThread 被回收崩溃）"""
+        retire_worker(getattr(self, 'parse_worker', None))
         self.parse_worker = None
     
     def _on_questions_loaded(self, questions: list):

@@ -23,6 +23,7 @@ from qfluentwidgets import FluentIcon as FIF
 from core.enterprise_logger import app_logger
 from core.homework_manager import HomeworkManager
 from core.homework_question_parser import HomeworkQuestionParser
+from ui.worker_lifecycle import retire_worker
 
 
 class HomeworkLoadWorker(QThread):
@@ -109,6 +110,8 @@ class HomeworkListFluent(QWidget):
         self.login_manager = None
         self.load_worker = None
         self.batch_worker = None
+        # 勾选集合：按作业唯一键记录，与表格行位置解耦（排序/筛选不丢失、不错位）
+        self._selected_ids = set()
         
         self._init_ui()
     
@@ -270,6 +273,8 @@ class HomeworkListFluent(QWidget):
         # 启用排序
         self.table.setSortingEnabled(True)
         header.setSortIndicatorShown(True)
+        # 排序只移动 Item 不移动 cellWidget，排序后重建两列控件以保持行对齐
+        self.table.horizontalHeader().sortIndicatorChanged.connect(self._rebuild_cell_widgets)
         
         # 双击进入详情
         self.table.cellDoubleClicked.connect(self._on_row_double_clicked)
@@ -351,6 +356,10 @@ class HomeworkListFluent(QWidget):
         # 清理之前的线程
         self._cleanup_workers()
         
+        # 切换课程时清空上一课程的勾选
+        self._selected_ids = set()
+        self.select_all_cb.setChecked(False)
+        
         self.current_course = course_info
         self.login_manager = login_manager
         
@@ -369,21 +378,11 @@ class HomeworkListFluent(QWidget):
         self.load_worker.start()
     
     def _cleanup_workers(self):
-        """清理工作线程"""
-        if hasattr(self, 'load_worker') and self.load_worker and self.load_worker.isRunning():
-            self.load_worker.blockSignals(True)
-            self.load_worker.wait(3000)
-            if self.load_worker and self.load_worker.isRunning():
-                app_logger.warning("作业加载线程未能在超时内结束")
+        """安全退役工作线程（不阻塞 UI，防止运行中 QThread 被回收崩溃）"""
+        retire_worker(getattr(self, 'load_worker', None))
         self.load_worker = None
-        
-        if hasattr(self, 'batch_worker') and self.batch_worker and self.batch_worker.isRunning():
-            self.batch_worker.blockSignals(True)
-            self.batch_worker.wait(3000)
-            if self.batch_worker and self.batch_worker.isRunning():
-                app_logger.warning("批量导出线程未能在超时内结束")
-        if hasattr(self, 'batch_worker'):
-            self.batch_worker = None
+        retire_worker(getattr(self, 'batch_worker', None))
+        self.batch_worker = None
     
     def _on_homework_loaded(self, homework_list: list):
         """作业加载完成"""
@@ -428,9 +427,10 @@ class HomeworkListFluent(QWidget):
         self.table.setRowCount(len(self.filtered_list))
         
         for row, homework in enumerate(self.filtered_list):
-            # 选择框
+            # 选择框（勾选状态按作业唯一键记录，与行位置解耦）
             cb = CheckBox(self)
-            cb.stateChanged.connect(self._update_selection_count)
+            cb.setChecked(self._hw_key(homework) in self._selected_ids)
+            cb.stateChanged.connect(lambda state, h=homework: self._on_cb_toggled(h, state))
             self.table.setCellWidget(row, 0, cb)
             
             # 标题
@@ -453,6 +453,42 @@ class HomeworkListFluent(QWidget):
             self.table.setItem(row, 3, deadline_item)
             
             # 操作按钮
+            view_btn = PushButton("查看", self)
+            view_btn.setFixedWidth(80)
+            view_btn.clicked.connect(lambda checked, h=homework: self._on_view_clicked(h))
+            self.table.setCellWidget(row, 4, view_btn)
+        
+        # 排序开启时插入 Item 可能触发自动重排，最后按 Item 实际顺序重建控件保证对齐
+        self._rebuild_cell_widgets()
+    
+    @staticmethod
+    def _hw_key(homework: dict) -> str:
+        """作业唯一标识：url 优先，退化为 title"""
+        url = homework.get('url') or ''
+        if url:
+            return f"url:{url}"
+        return f"title:{homework.get('title', '')}"
+    
+    def _on_cb_toggled(self, homework: dict, state):
+        """勾选状态改变：按作业唯一键维护选中集合"""
+        checked = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
+        if checked:
+            self._selected_ids.add(self._hw_key(homework))
+        else:
+            self._selected_ids.discard(self._hw_key(homework))
+        self._update_selection_count()
+    
+    def _rebuild_cell_widgets(self, column=None, order=None):
+        """排序后重建 checkbox / 查看按钮，保持与移动后的 Item 行对齐"""
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 1)
+            homework = item.data(Qt.UserRole) if item else None
+            if not homework:
+                continue
+            cb = CheckBox(self)
+            cb.setChecked(self._hw_key(homework) in self._selected_ids)
+            cb.stateChanged.connect(lambda state, h=homework: self._on_cb_toggled(h, state))
+            self.table.setCellWidget(row, 0, cb)
             view_btn = PushButton("查看", self)
             view_btn.setFixedWidth(80)
             view_btn.clicked.connect(lambda checked, h=homework: self._on_view_clicked(h))
@@ -508,22 +544,22 @@ class HomeworkListFluent(QWidget):
     
     def _update_selection_count(self):
         """更新选中数量"""
-        count = 0
-        for row in range(self.table.rowCount()):
-            cb = self.table.cellWidget(row, 0)
-            if cb and cb.isChecked():
-                count += 1
-        
+        count = len(self._selected_ids)
         self.selected_label.setText(f"已选择 {count} 项")
         self.batch_export_btn.setEnabled(count > 0)
     
     def _on_select_all_changed(self, state):
         """全选状态改变"""
         checked = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
+        if checked:
+            self._selected_ids = {self._hw_key(h) for h in self.filtered_list}
+        else:
+            self._selected_ids.clear()
         for row in range(self.table.rowCount()):
             cb = self.table.cellWidget(row, 0)
             if cb:
                 cb.setChecked(checked)
+        self._update_selection_count()
     
     def _on_row_double_clicked(self, row, col):
         """行双击处理"""
@@ -539,16 +575,11 @@ class HomeworkListFluent(QWidget):
     
     def _on_batch_export(self):
         """批量导出"""
-        selected = []
-        for row in range(self.table.rowCount()):
-            cb = self.table.cellWidget(row, 0)
-            if cb and cb.isChecked():
-                item = self.table.item(row, 1)
-                if item:
-                    homework = item.data(Qt.UserRole)
-                    if homework:
-                        selected.append(homework)
-        
+        if not self._selected_ids:
+            return
+        # 按选中集合导出，避免排序后 cellWidget 与行错位导致导出错误作业
+        key_map = {self._hw_key(h): h for h in self.filtered_list}
+        selected = [key_map[k] for k in self._selected_ids if k in key_map]
         if not selected:
             return
         
@@ -630,6 +661,8 @@ class HomeworkListFluent(QWidget):
         self.homework_list = []
         self.filtered_list = []
         self.current_course = None
+        self._selected_ids = set()
+        self.select_all_cb.setChecked(False)
         self.table.setRowCount(0)
         self.course_label.setText("")
         
