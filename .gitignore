@@ -26,6 +26,9 @@ env/
 *.swo
 *~
 
+# ========== WorkBuddy 会话数据 ==========
+.workbuddy/
+
 # ========== PyInstaller / Nuitka ==========
 dist/
 build/

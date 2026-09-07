@@ -268,20 +268,14 @@ class HomeworkManager(SessionManagerMixin):
             parsed = urlparse(base_url)
             params = parse_qs(parsed.query, keep_blank_values=True)
             
-            # 提取核心参数
-            course_id = params.get('courseId', params.get('courseid', ['']))[0]
-            class_id = params.get('classId', params.get('clazzid', ['']))[0]
-            cpi = params.get('cpi', [''])[0]
-            enc = params.get('enc', [''])[0]
-            
-            # 构建分页URL（使用 mooc-ans 路径，只需核心参数+pageNum）
-            page_params = {
-                'courseId': course_id,
-                'classId': class_id,
-                'cpi': cpi,
-                'enc': enc,
-                'pageNum': str(page_num)
-            }
+            # 全量继承第一页的参数：courseId/classId/cpi/ut/t/stuenc/enc ...
+            # 原实现只手工挑了 4 个，会丢掉 ut/t/stuenc，
+            # 且遗漏分页接口必需的 status/topicId，导致第 2 页起可能返回空列表
+            page_params = {k: v[0] for k, v in params.items()}
+            page_params.pop('pageNum', None)
+            page_params['pageNum'] = str(page_num)
+            page_params.setdefault('status', '0')
+            page_params.setdefault('topicId', '0')
             
             page_url = f"https://mooc1.chaoxing.com/mooc-ans/mooc2/work/list?{urlencode(page_params)}"
             return page_url
@@ -891,6 +885,7 @@ class HomeworkManager(SessionManagerMixin):
             if total_pages > 1:
                 app_logger.info(f" 检测到多页作业列表，共 {total_pages} 页，正在获取剩余页面...")
                 
+                empty_pages = 0
                 for page_num in range(2, total_pages + 1):
                     # 构建带页码的URL
                     page_url = self.build_homework_url_with_page(base_homework_url, page_num)
@@ -903,8 +898,16 @@ class HomeworkManager(SessionManagerMixin):
                         page_homework = self.parse_homework_content(page_content, course_name)
                         app_logger.info(f" 第{page_num}页找到 {len(page_homework)} 个作业")
                         
-                        # 合并到总列表
-                        all_homework.extend(page_homework)
+                        # 空页兜底：总页数是从页面内嵌 JS 里读的，JS 未渲染时会误判成很大的值。
+                        # 连续两页没有内容即认为后续无数据，停止翻页，避免大量无效请求。
+                        if not page_homework:
+                            empty_pages += 1
+                            if empty_pages >= 2:
+                                app_logger.info(f" 第{page_num}页起连续无内容，提前结束翻页")
+                                break
+                        else:
+                            empty_pages = 0
+                            all_homework.extend(page_homework)
                     else:
                         app_logger.warning(f" 获取第{page_num}页失败，跳过")
             

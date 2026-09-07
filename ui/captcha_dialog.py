@@ -5,12 +5,43 @@
 """
 
 from PySide6.QtWidgets import (QVBoxLayout, QLabel, QFrame, QSizePolicy)
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QPixmap
 
 from qfluentwidgets import (MessageBoxBase, SubtitleLabel, LineEdit, 
                             InfoBar, InfoBarPosition)
 from core.enterprise_logger import app_logger
+
+class CaptchaLoadWorker(QThread):
+    """验证码图片加载线程
+
+    原实现在主线程直接发网络请求，网络慢时整个界面会冻结；
+    且验证码对话框是模态的（exec() 阻塞），期间用户完全无法操作。
+    """
+    loaded = Signal(bytes)
+    failed = Signal(str)
+
+    def __init__(self, session, headers, url, parent=None):
+        super().__init__(parent)
+        self.session = session
+        self.headers = headers
+        self.url = url
+
+    def run(self):
+        try:
+            response = self.session.get(self.url, headers=self.headers, timeout=10)
+            if response.status_code == 200 and response.content:
+                self.loaded.emit(response.content)
+            else:
+                self.failed.emit(f"HTTP {response.status_code}")
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
+# 全局保持线程引用：防止对话框提前销毁时 QThread 被一并删除
+# （QThread 在运行中被销毁会直接崩溃），线程结束后自我移除
+_active_captcha_workers = set()
+
 
 class CaptchaDialog(MessageBoxBase):
     """图片验证码对话框"""
@@ -22,6 +53,7 @@ class CaptchaDialog(MessageBoxBase):
         self.captcha_url = captcha_url
         self.captcha_code = ""
         self.is_cancelled = False
+        self.captcha_worker = None
         
         self.init_ui()
         # 延迟加载验证码
@@ -88,22 +120,73 @@ class CaptchaDialog(MessageBoxBase):
         self.load_captcha()
         
     def load_captcha(self):
-        """加载验证码图片"""
+        """异步加载验证码图片（不阻塞主线程）"""
+        # 上一次加载尚未结束时不重复发起，避免并发请求
+        if self.captcha_worker is not None and self.captcha_worker.isRunning():
+            return
+
+        self.captcha_label.setText("正在获取...")
+
+        captcha_url = self.captcha_url or "https://passport2.chaoxing.com/num/code"
+        # 不挂到对话框上：对话框销毁不带走运行中的线程
+        self.captcha_worker = CaptchaLoadWorker(self.session, self.headers, captcha_url)
+        _active_captcha_workers.add(self.captcha_worker)
+        self.captcha_worker.finished.connect(
+            lambda w=self.captcha_worker: _active_captcha_workers.discard(w))
+        self.captcha_worker.loaded.connect(self._on_captcha_loaded)
+        self.captcha_worker.failed.connect(self._on_captcha_failed)
+        self.captcha_worker.start()
+
+    def _release_worker(self):
+        """释放已结束的工作线程"""
+        worker = self.captcha_worker
+        self.captcha_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _on_captcha_loaded(self, data: bytes):
+        pixmap = QPixmap()
+        if pixmap.loadFromData(data):
+            scaled = pixmap.scaled(200, 70, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.captcha_label.setPixmap(scaled)
+        else:
+            self.captcha_label.setText("图片解析失败")
+        self._release_worker()
+
+    def _on_captcha_failed(self, msg: str):
+        app_logger.warning(f"验证码加载失败: {msg}")
+        self.captcha_label.setText("加载失败，点击重试")
+        self._release_worker()
+
+    def _stop_worker(self):
+        """对话框关闭时断开工作线程的数据回调
+
+        只断开 loaded/failed，保留 finished 上的自清理连接，
+        线程自然结束后仍会从 _active_captcha_workers 中移除。
+        （不能用 blockSignals(True)：那会连 finished 一起屏蔽，集合将永久泄漏）
+        """
+        worker = getattr(self, 'captcha_worker', None)
+        if worker is None:
+            return
         try:
-            captcha_url = self.captcha_url if self.captcha_url else "https://passport2.chaoxing.com/num/code"
-            # 简单GET请求
-            response = self.session.get(captcha_url, headers=self.headers, timeout=5)
-            
-            if response.status_code == 200:
-                pixmap = QPixmap()
-                if pixmap.loadFromData(response.content):
-                    scaled = pixmap.scaled(200, 70, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    self.captcha_label.setPixmap(scaled)
-                    return
-            
-            self.captcha_label.setText("加载失败")
-        except Exception:
-            self.captcha_label.setText("网络错误")
+            worker.loaded.disconnect()
+            worker.failed.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        self.captcha_worker = None
+        # 安排销毁：运行中的线程不能立即销毁（会崩溃），
+        # 等 finished 后再 deleteLater；已结束的可直接调度销毁
+        try:
+            if worker.isRunning():
+                worker.finished.connect(worker.deleteLater)
+            else:
+                worker.deleteLater()
+        except RuntimeError:
+            pass
+
+    def closeEvent(self, event):
+        self._stop_worker()
+        super().closeEvent(event)
 
     def on_text_changed(self, text):
         self.yesButton.setEnabled(len(text.strip()) >= 3)

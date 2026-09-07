@@ -8,6 +8,7 @@
 - HTML：精美网页格式，支持打印
 - JSON：结构化数据，便于二次处理
 - Word (DOCX)：正式文档格式
+- Excel (XLSX)：表格格式，便于筛选统计
 - PDF：通用便携格式
 - Markdown：纯文本标记格式
 
@@ -275,6 +276,112 @@ class QuestionExporter:
             app_logger.warning(f"获取图片字节流失败: {e}")
             return None
     
+    def _to_png_bytes(self, img_bytes: bytes) -> Optional[bytes]:
+        """把任意格式的图片字节统一转成 PNG（Word / Excel 共用）
+
+        抓取到的图片可能是 JPEG / WebP / RGBA / 调色板等任意格式，
+        而 python-docx 与 xlsxwriter 对格式支持有限，统一转 PNG 更稳。
+        透明通道会合成到白底，避免转 RGB 后背景发黑。
+        """
+        import io
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(img_bytes))
+            if img.mode in ('RGBA', 'LA', 'P'):
+                if img.mode == 'P':
+                    img = img.convert('RGBA')
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                img = background
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            buf.seek(0)
+            return buf.getvalue()
+        except Exception as e:
+            app_logger.warning(f"图片转PNG失败: {type(e).__name__}: {e}")
+            return None
+
+    def _collect_question_images(self, q: Dict) -> List[dict]:
+        """收集一道题关联的全部图片（题干/选项/我的答案/正确答案/解析）"""
+        images: List[dict] = []
+        for field in ('content_images', 'option_images', 'my_answer_images',
+                      'correct_answer_images', 'explanation_images'):
+            images.extend(get_question_field(q, field, []) or [])
+        for opt in (q.get('options') or []):
+            if isinstance(opt, dict):
+                images.extend(opt.get('images') or [])
+        return [img for img in images if isinstance(img, dict)]
+
+    def _insert_images_to_excel(self, worksheet, row: int, col: int, images: List,
+                                max_width_px: int = 200, padding: int = 4) -> int:
+        """把图片纵向堆叠插入 Excel 单元格，返回该行所需高度（像素）
+
+        多张图片共用一个单元格时必须手动累加 y_offset，
+        否则后插入的会盖住先插入的。
+
+        单位说明：xlsxwriter 的 set_row 行高单位是磅（1px ≈ 0.75 磅 @96DPI），
+        Excel 行高上限 409.5 磅（≈546px）。若图片堆叠总高超过上限，
+        等比缩小整组图片，避免溢出覆盖下一题所在的行。
+        """
+        import io
+        if not images or not self.options.include_images:
+            return 0
+
+        # 第一遍：解码并按最大宽度缩放，得到各图显示尺寸
+        sized = []
+        for img in images:
+            raw = self._get_image_bytes(img)
+            if not raw:
+                continue
+            png = self._to_png_bytes(raw)
+            if not png:
+                continue
+            try:
+                from PIL import Image as PILImage
+                width, height = PILImage.open(io.BytesIO(png)).size
+                scale = min(1.0, max_width_px / float(width)) if width else 1.0
+                sized.append([png, scale, int(width * scale), int(height * scale)])
+            except Exception as e:
+                app_logger.warning(f"Excel图片解码失败: {type(e).__name__}: {e}")
+
+        if not sized:
+            return 0
+
+        # 第二遍：堆叠总高超过行高上限时，等比压缩整组图片
+        MAX_ROW_PX = 540  # 409.5 磅 ≈ 546px，留余量
+        gaps = padding * (len(sized) - 1)
+        total_h = sum(item[3] for item in sized) + gaps
+        if total_h > MAX_ROW_PX:
+            avail = float(MAX_ROW_PX - gaps)
+            img_h = float(sum(item[3] for item in sized))
+            if img_h > 0 and avail > 0:
+                shrink = avail / img_h
+                for item in sized:
+                    item[1] *= shrink
+                    item[2] = max(1, int(item[2] * shrink))
+                    item[3] = max(1, int(item[3] * shrink))
+                total_h = sum(item[3] for item in sized) + gaps
+
+        # 第三遍：插入并累计 y_offset
+        y_offset = 0
+        for i, (png, scale, _w, h) in enumerate(sized):
+            try:
+                worksheet.insert_image(row, col, f'image_{row}_{col}_{i}.png', {
+                    'image_data': io.BytesIO(png),
+                    'x_scale': scale,
+                    'y_scale': scale,
+                    'y_offset': y_offset,
+                })
+                y_offset += h + padding
+            except Exception as e:
+                app_logger.warning(f"Excel插入图片失败: {type(e).__name__}: {e}")
+
+        # 行高：像素转磅（×0.75），并夹在上限内
+        worksheet.set_row(row, min(409.0, total_h * 0.75))
+        return total_h
+
     def _add_images_to_word(self, doc, images: List, max_width_inches: float = 6.0):
         """向Word文档添加图片，保持原始比例"""
         from docx.shared import Inches, Pt
@@ -292,31 +399,21 @@ class QuestionExporter:
                 continue
             
             try:
-                # 使用PIL转换为PNG格式，确保python-docx能识别
+                # 统一转 PNG，确保 python-docx 能识别
                 from PIL import Image
-                img_pil = Image.open(io.BytesIO(img_bytes))
-                orig_width, orig_height = img_pil.size
-                
-                # 转换为RGB模式（如果是RGBA或其他模式）
-                if img_pil.mode in ('RGBA', 'LA', 'P'):
-                    background = Image.new('RGB', img_pil.size, (255, 255, 255))
-                    if img_pil.mode == 'P':
-                        img_pil = img_pil.convert('RGBA')
-                    background.paste(img_pil, mask=img_pil.split()[-1] if img_pil.mode == 'RGBA' else None)
-                    img_pil = background
-                elif img_pil.mode != 'RGB':
-                    img_pil = img_pil.convert('RGB')
-                
-                # 保存为PNG到内存
-                png_buffer = io.BytesIO()
-                img_pil.save(png_buffer, format='PNG')
+                png_bytes = self._to_png_bytes(img_bytes)
+                if not png_bytes:
+                    continue
+
+                png_buffer = io.BytesIO(png_bytes)
+                orig_width, _ = Image.open(png_buffer).size
                 png_buffer.seek(0)
-                
+
                 # 计算尺寸：像素转英寸（96 DPI），但限制最大宽度
                 width_inches = orig_width / 96.0
                 if width_inches > max_width_inches:
                     width_inches = max_width_inches
-                
+
                 doc.add_picture(png_buffer, width=Inches(width_inches))
             except Exception as e:
                 app_logger.warning(f"Word添加图片失败: {type(e).__name__}: {e}")
@@ -637,6 +734,8 @@ class QuestionExporter:
                 headers.append('是否正确')
             if self.options.include_analysis:
                 headers.append('解析')
+            if self.options.include_images:
+                headers.append('图片')
 
             for col, header in enumerate(headers):
                 worksheet.write(0, col, header, header_format)
@@ -683,16 +782,13 @@ class QuestionExporter:
                 col += 1
 
                 if self.options.include_my_answer:
-                    my_answer = self._get_my_answer(q)
-                    if my_answer and '[图片' in my_answer:
-                        my_answer = ''
+                    # 图片已在独立列展示，文本里只需去掉占位符，不再整段清空
+                    my_answer = re.sub(r'\[图片[：:][^\]]*\]', '', self._get_my_answer(q) or '').strip()
                     worksheet.write(row, col, my_answer, cell_format)
                     col += 1
 
                 if self.options.include_correct_answer:
-                    correct_answer = self._get_question_answer(q)
-                    if correct_answer and '[图片' in correct_answer:
-                        correct_answer = ''
+                    correct_answer = re.sub(r'\[图片[：:][^\]]*\]', '', self._get_question_answer(q) or '').strip()
                     worksheet.write(row, col, correct_answer, cell_format)
                     col += 1
 
@@ -710,6 +806,11 @@ class QuestionExporter:
                     worksheet.write(row, col, self._get_analysis(q), cell_format)
                     col += 1
 
+                if self.options.include_images:
+                    self._insert_images_to_excel(
+                        worksheet, row, col, self._collect_question_images(q))
+                    col += 1
+
             col_widths = {
                 '序号': 8,
                 '作业': 20,
@@ -720,7 +821,8 @@ class QuestionExporter:
                 '正确答案': 15,
                 '得分': 10,
                 '是否正确': 10,
-                '解析': 30
+                '解析': 30,
+                '图片': 30
             }
             for col, header in enumerate(headers):
                 worksheet.set_column(col, col, col_widths.get(header, 15))
@@ -933,6 +1035,50 @@ class QuestionExporter:
     
     # ==================== PDF 导出 ====================
     
+    @staticmethod
+    def _find_chinese_font() -> Optional[str]:
+        """按平台查找可用的中文字体文件，找不到返回 None
+
+        原实现硬编码 C:/Windows/Fonts/，在非 Windows 平台必然找不到字体，
+        导致导出的 PDF 中文全是乱码（且只有一条 warning，用户不易察觉）。
+        """
+        import platform
+        import glob
+
+        system = platform.system()
+        candidates: List[str] = []
+
+        if system == 'Windows':
+            windir = (os.environ.get('WINDIR')
+                      or os.environ.get('SystemRoot')
+                      or r'C:\Windows')
+            candidates = [
+                os.path.join(windir, 'Fonts', 'msyh.ttc'),     # 微软雅黑
+                os.path.join(windir, 'Fonts', 'msyhbd.ttc'),
+                os.path.join(windir, 'Fonts', 'simhei.ttf'),   # 黑体
+                os.path.join(windir, 'Fonts', 'simsun.ttc'),   # 宋体
+            ]
+        elif system == 'Darwin':
+            candidates = [
+                '/System/Library/Fonts/PingFang.ttc',
+                '/System/Library/Fonts/STHeiti Medium.ttc',
+                '/System/Library/Fonts/STHeiti Light.ttc',
+                '/Library/Fonts/Arial Unicode.ttf',
+            ]
+        else:  # Linux 及其他类 Unix
+            candidates = (
+                glob.glob('/usr/share/fonts/**/NotoSansCJK*.tt[cf]', recursive=True) +
+                glob.glob('/usr/share/fonts/**/NotoSerifCJK*.tt[cf]', recursive=True) +
+                glob.glob('/usr/share/fonts/**/wqy-*.tt[cf]', recursive=True) +
+                glob.glob(os.path.expanduser('~/.fonts/**/*.tt[cf]'), recursive=True) +
+                ['/usr/share/fonts/truetype/arphic/uming.ttc']
+            )
+
+        for path in candidates:
+            if path and os.path.exists(path):
+                return path
+        return None
+
     def export_pdf(self, output_path: str) -> bool:
         """
         导出为PDF格式
@@ -957,25 +1103,33 @@ class QuestionExporter:
             return False
         
         try:
-            # 注册中文字体 (尝试多种字体)
+            # 注册中文字体：系统字体 → reportlab 内置 CID 字体 → 明确告警
             chinese_font_registered = False
-            font_paths = [
-                "C:/Windows/Fonts/simhei.ttf",  # 黑体
-                "C:/Windows/Fonts/simsun.ttc",  # 宋体
-                "C:/Windows/Fonts/msyh.ttc",    # 微软雅黑
-            ]
-            
-            for font_path in font_paths:
-                if os.path.exists(font_path):
-                    try:
-                        pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
-                        chinese_font_registered = True
-                        break
-                    except Exception:
-                        continue
-            
+            font_name = 'Helvetica'
+
+            font_path = self._find_chinese_font()
+            if font_path:
+                try:
+                    pdfmetrics.registerFont(TTFont('ChineseFont', font_path))
+                    chinese_font_registered = True
+                    font_name = 'ChineseFont'
+                    app_logger.info(f"PDF 中文字体: {font_path}")
+                except Exception as e:
+                    app_logger.warning(f"注册中文字体失败 {font_path}: {e}")
+
             if not chinese_font_registered:
-                app_logger.warning("未找到中文字体，PDF可能显示乱码")
+                # reportlab 自带 STSong-Light CID 字体，不依赖任何系统字体文件
+                try:
+                    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+                    pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))
+                    chinese_font_registered = True
+                    font_name = 'STSong-Light'
+                    app_logger.info("PDF 中文字体回退: reportlab 内置 STSong-Light")
+                except Exception as e:
+                    app_logger.warning(f"内置 CID 字体不可用: {e}")
+
+            if not chinese_font_registered:
+                app_logger.error("未找到任何可用的中文字体，PDF 中的中文将显示为乱码")
             
             doc = SimpleDocTemplate(output_path, pagesize=A4,
                                    rightMargin=2*cm, leftMargin=2*cm,
@@ -989,21 +1143,21 @@ class QuestionExporter:
                 title_style = ParagraphStyle(
                     'ChineseTitle',
                     parent=styles['Title'],
-                    fontName='ChineseFont',
+                    fontName=font_name,
                     fontSize=18,
                     alignment=1
                 )
                 normal_style = ParagraphStyle(
                     'ChineseNormal',
                     parent=styles['Normal'],
-                    fontName='ChineseFont',
+                    fontName=font_name,
                     fontSize=11,
                     leading=16
                 )
                 heading_style = ParagraphStyle(
                     'ChineseHeading',
                     parent=styles['Heading2'],
-                    fontName='ChineseFont',
+                    fontName=font_name,
                     fontSize=14
                 )
             else:
@@ -1187,6 +1341,10 @@ class QuestionExporter:
         docx_path = os.path.join(output_dir, f"{base_name}.docx")
         results['word'] = self.export_word(docx_path)
         
+        # Excel
+        xlsx_path = os.path.join(output_dir, f"{base_name}.xlsx")
+        results['excel'] = self.export_excel(xlsx_path)
+
         # PDF
         pdf_path = os.path.join(output_dir, f"{base_name}.pdf")
         results['pdf'] = self.export_pdf(pdf_path)
@@ -1208,7 +1366,7 @@ def quick_export(questions: List[Dict],
         questions: 题目列表
         homework_title: 作业标题
         output_path: 输出路径
-        format: 格式 ('html', 'json', 'md', 'word', 'pdf')
+        format: 格式 ('html', 'json', 'md', 'markdown', 'word', 'docx', 'excel', 'xlsx', 'pdf')
         include_my_answer: 包含我的答案
         include_correct_answer: 包含正确答案
         
@@ -1229,6 +1387,8 @@ def quick_export(questions: List[Dict],
         return exporter.export_markdown(output_path)
     elif format in ('word', 'docx'):
         return exporter.export_word(output_path)
+    elif format in ('excel', 'xlsx'):
+        return exporter.export_excel(output_path)
     elif format == 'pdf':
         return exporter.export_pdf(output_path)
     else:

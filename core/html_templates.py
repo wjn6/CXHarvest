@@ -12,6 +12,16 @@ from typing import List, Dict, Optional
 from .enterprise_logger import app_logger
 from .version import __version__, APP_NAME
 
+# 图片 src 安全白名单（题目内容抓取自网页，属不可信输入）
+# 允许: http(s):// 绝对地址、常见位图的 base64 data URI、以及 / ./ ../ 开头的相对路径
+# 明确排除 data:image/svg+xml —— SVG 可内嵌 <script>，等同可执行内容
+_SAFE_IMG_SRC_RE = re.compile(
+    r'^(?:https?://'
+    r'|data:image/(?:png|jpe?g|gif|webp|bmp);base64,'
+    r'|/|\./|\.\./)',
+    re.IGNORECASE,
+)
+
 
 class HtmlTemplate:
     """HTML 模板基类"""
@@ -35,6 +45,17 @@ class HtmlTemplate:
                 .replace('>', '&gt;').replace('"', '&quot;').replace("'", '&#39;'))
 
     @staticmethod
+    def _safe_src(src) -> str:
+        """过滤图片地址，只放行安全协议，返回 '' 表示应丢弃
+
+        题目与图片地址均抓取自第三方页面，属不可信输入。
+        白名单与 _esc() 需同时使用：白名单防 javascript: 等伪协议，
+        转义防引号截断属性导致 HTML 注入。
+        """
+        s = str(src or '').strip()
+        return s if _SAFE_IMG_SRC_RE.match(s) else ''
+
+    @staticmethod
     def _render_imgs(images, include_images=True):
         if not images or not include_images:
             return ""
@@ -45,9 +66,15 @@ class HtmlTemplate:
                 alt = img.get('alt', '图片')
             else:
                 src, alt = str(img), '图片'
-            if src:
+            safe_src = HtmlTemplate._safe_src(src)
+            if safe_src:
                 safe_alt = HtmlTemplate._esc(alt)
-                parts.append(f'<img class="question-image" src="{src}" alt="{safe_alt}" style="max-width:100%;" />')
+                parts.append(
+                    f'<img class="question-image" src="{HtmlTemplate._esc(safe_src)}" '
+                    f'alt="{safe_alt}" style="max-width:100%;" />'
+                )
+            elif src:
+                app_logger.warning(f"已丢弃不安全的图片地址: {str(src)[:60]}")
         return '\n'.join(parts)
 
     @staticmethod

@@ -278,6 +278,8 @@ class CourseListFluent(QWidget):
         self.card_widgets = [] # 存储所有卡片实例
         self.login_manager = None
         self.load_worker = None
+        # 加载代号：每次发起加载递增，用于丢弃上一轮线程的迟到结果
+        self._load_generation = 0
         
         self._init_ui()
     
@@ -439,9 +441,45 @@ class CourseListFluent(QWidget):
     
     # ==================== 数据操作 ====================
     
+    def _cleanup_workers(self):
+        """清理上一轮加载线程
+
+        课程列表会被多处重复触发（登录成功、下拉刷新、Ctrl+R）。
+        若直接覆盖 load_worker，旧线程仍会 emit 结果，
+        造成列表重复渲染、加载态被提前关闭。
+        """
+        worker = getattr(self, 'load_worker', None)
+        if worker is None:
+            return
+        try:
+            # 断开数据信号即可阻止旧结果覆盖新结果
+            try:
+                worker.courses_loaded.disconnect()
+                worker.error_occurred.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            # 不调用 wait()：阻塞主线程至多 3 秒会明显卡顿，
+            # 旧线程只是一次多余的网络请求，让它自然结束后自我回收即可
+            if worker.isRunning():
+                worker.finished.connect(worker.deleteLater)
+            else:
+                worker.deleteLater()
+        except RuntimeError:
+            # 底层 C++ 对象可能已被销毁
+            pass
+        self.load_worker = None
+
+    def _is_stale(self, gen: int) -> bool:
+        """该代号的结果是否已过期（期间又发起了新的加载）"""
+        return gen != self._load_generation
+
     def load_courses(self, login_manager, force_refresh=False):
         """加载课程列表"""
         self.login_manager = login_manager
+        self._cleanup_workers()
+
+        self._load_generation += 1
+        gen = self._load_generation
         
         # 安全退役在途加载线程：防止旧结果覆盖新数据 / 运行中线程被回收崩溃
         if hasattr(self, 'load_worker'):
@@ -452,13 +490,24 @@ class CourseListFluent(QWidget):
         
         # 启动加载线程
         self.load_worker = CourseLoadWorker(login_manager, force_refresh)
-        self.load_worker.courses_loaded.connect(self._on_courses_loaded)
-        self.load_worker.error_occurred.connect(self._on_load_error)
-        self.load_worker.finished.connect(lambda: self._set_loading(False))
+        self.load_worker.courses_loaded.connect(
+            lambda courses, g=gen: self._on_courses_loaded(courses, g))
+        self.load_worker.error_occurred.connect(
+            lambda msg, g=gen: self._on_load_error(msg, g))
+        self.load_worker.finished.connect(lambda g=gen: self._on_load_finished(g))
         self.load_worker.start()
+
+    def _on_load_finished(self, gen: int):
+        """加载线程结束"""
+        if self._is_stale(gen):
+            return
+        self._set_loading(False)
     
-    def _on_courses_loaded(self, courses: list):
+    def _on_courses_loaded(self, courses: list, gen: int = None):
         """课程加载完成"""
+        if gen is not None and self._is_stale(gen):
+            app_logger.info("忽略过期的课程加载结果")
+            return
         self.courses = courses
         self.filtered_courses = courses.copy() # 初始化过滤列表
         
@@ -467,8 +516,10 @@ class CourseListFluent(QWidget):
         
         app_logger.info(f"加载了 {len(courses)} 门课程")
     
-    def _on_load_error(self, error_msg: str):
+    def _on_load_error(self, error_msg: str, gen: int = None):
         """加载错误"""
+        if gen is not None and self._is_stale(gen):
+            return
         # 如果是登录过期，提示重新登录
         if '登录' in error_msg and ('过期' in error_msg or '失效' in error_msg or '未登录' in error_msg):
             InfoBar.warning(

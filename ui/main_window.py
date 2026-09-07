@@ -933,53 +933,89 @@ class UpdateInfoDialog(MessageBoxBase):
         self.progress_bar.setValue(percentage)
         self.progress_label.setText(f"下载中: {percentage}% ({speed})")
     
-    def _on_download_finished(self, success: bool, message: str):
-        """下载完成"""
+    def _on_download_finished(self, success: bool, message: str,
+                              sha256: str = "", sig_status: str = ""):
+        """下载完成
+
+        安全策略变更：不再自动执行下载的安装包。
+        原实现下载完成后直接 os.startfile() 运行 exe——若仓库或 release
+        资产被投毒，等于一键 RCE。现在只展示文件位置 / SHA256 / 签名状态，
+        由用户显式决定是否安装。
+        """
         self.progress_bar.hide()
-        
-        if success:
-            self.progress_label.setText("下载完成")
-            self.progress_label.setStyleSheet("color: #27ae60;")
-            
-            InfoBar.success(
-                title="下载完成",
-                content=message,
-                orient=Qt.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=5000,
-                parent=self.window()
-            )
-            
-            # 询问用户是否运行安装程序（不自动执行，避免执行被篡改文件的静默风险）
-            save_path = self.download_worker.save_path if self.download_worker else None
-            if save_path and os.path.exists(save_path):
-                self._ask_run_installer(save_path)
-        else:
+        if not success:
             self.progress_label.setText(f"下载失败: {message}")
             self.progress_label.setStyleSheet("color: #e74c3c;")
-    
-    def _ask_run_installer(self, save_path: str):
-        """下载完成后询问用户：立即安装 or 打开所在文件夹"""
-        from qfluentwidgets import MessageBox
-        box = MessageBox(
-            "更新包下载完成",
-            f"文件已保存到：\n{save_path}\n\n是否立即运行安装程序？",
-            self.window()
+            return
+
+        self.progress_label.setText("下载完成")
+        self.progress_label.setStyleSheet("color: #27ae60;")
+
+        InfoBar.success(
+            title="下载完成",
+            content=message,
+            orient=Qt.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.TOP,
+            duration=5000,
+            parent=self.window()
         )
-        box.yesButton.setText("立即安装")
-        box.cancelButton.setText("打开所在文件夹")
-        if box.exec():
+
+        import os
+        save_path = self.download_worker.save_path if self.download_worker else None
+        if not save_path or not os.path.exists(save_path):
+            return
+
+        self._prompt_install(save_path, sha256, sig_status)
+
+    def _prompt_install(self, save_path: str, sha256: str, sig_status: str):
+        """展示安装确认对话框（不自动执行）
+
+        按签名状态分流：valid 提供"立即安装"；unsigned 提供"仍要安装"并警告；
+        invalid 不提供安装按钮；unknown 提供按钮并注明无法校验。
+        """
+        import os
+        from PySide6.QtWidgets import QMessageBox
+
+        sig_text = {
+            'valid': "数字签名校验通过。",
+            'unsigned': "警告：该安装包未包含数字签名。\n"
+                        "请确认其来自官方发布渠道后再安装。",
+            'invalid': "数字签名校验失败！强烈建议不要安装此文件。",
+            'unknown': "无法校验签名（非 Windows 平台或校验工具不可用）。",
+        }.get(sig_status, "未知签名状态。")
+
+        sha_text = f"SHA256: {sha256}" if sha256 else "SHA256: 未提供"
+        text = (f"文件: {save_path}\n\n{sha_text}\n\n{sig_text}")
+
+        box = QMessageBox(self)
+        box.setWindowTitle("下载完成")
+        box.setText("安装包已下载，是否立即安装？")
+        box.setInformativeText(text)
+
+        open_btn = box.addButton("打开所在文件夹", QMessageBox.AcceptRole)
+        if sig_status != 'invalid':
+            install_label = "仍要安装" if sig_status == 'unsigned' else "立即安装"
+            install_btn = box.addButton(install_label, QMessageBox.YesRole)
+        else:
+            install_btn = None
+        box.addButton("稍后", QMessageBox.RejectRole)
+
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is open_btn:
+            # 复用作者 4b6ff3e 的 helper：在文件管理器中选中该文件
+            self._open_in_folder(save_path)
+        elif install_btn is not None and clicked is install_btn:
             try:
                 os.startfile(save_path)
             except Exception as e:
-                app_logger.warning(f"启动安装程序失败: {e}")
-        else:
-            self._open_in_folder(save_path)
-    
+                app_logger.warning(f"启动安装包失败: {e}")
+
     @staticmethod
     def _open_in_folder(save_path: str):
-        """在文件管理器中定位下载的文件"""
+        """在文件管理器中定位下载的文件（跨平台选中文件）"""
         try:
             import subprocess
             if sys.platform == 'win32':
@@ -998,10 +1034,10 @@ class UpdateInfoDialog(MessageBoxBase):
 
 
 class DownloadWorker(QThread):
-    """下载工作线程（含 HTTP 状态校验 + SHA256 验证）"""
+    """下载工作线程（含 HTTP 状态校验 + SHA256 验证 + 签名校验）"""
     progress_updated = Signal(int, str)  # percentage, speed
-    download_finished = Signal(bool, str)  # success, message
-    
+    download_finished = Signal(bool, str, str, str)  # success, message, sha256, sig_status
+
     def __init__(self, url: str, save_path: str, sha256_url: str = None, parent=None):
         super().__init__(parent)
         self.url = url
@@ -1012,6 +1048,37 @@ class DownloadWorker(QThread):
     def cancel(self):
         """取消下载"""
         self._cancelled = True
+
+    @staticmethod
+    def check_authenticode_signature(path: str) -> str:
+        """校验 PE 文件数字签名，返回 'valid' / 'unsigned' / 'invalid' / 'unknown'
+
+        在下载线程内调用，PowerShell 启动耗时不会阻塞 UI。
+        Windows 文件名不允许包含引号，路径拼入命令无注入风险。
+        """
+        import sys as _sys
+        import subprocess
+        if _sys.platform != 'win32':
+            return 'unknown'
+        try:
+            result = subprocess.run(
+                ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                 '-Command', f'(Get-AuthenticodeSignature -FilePath "{path}").Status'],
+                capture_output=True, timeout=20,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            # 不用 text=True：中文 Windows 的 PowerShell 输出是 GBK，
+            # 按 UTF-8 解码会让读取线程抛异常。Status 枚举值恒为 ASCII，
+            # 用字节读取并忽略非 ASCII 即可。
+            status = (result.stdout or b'').decode('ascii', errors='ignore').strip()
+            if status == 'Valid':
+                return 'valid'
+            if status == 'NotSigned':
+                return 'unsigned'
+            if status:
+                return 'invalid'
+            return 'unknown'
+        except Exception:
+            return 'unknown'
 
     def run(self):
         import requests
@@ -1075,7 +1142,7 @@ class DownloadWorker(QThread):
                     actual_hash = sha256_hash.hexdigest().lower()
                     if expected_hash != actual_hash:
                         os.remove(tmp_path)
-                        self.download_finished.emit(False, "SHA256 校验失败，文件可能已被篡改或损坏")
+                        self.download_finished.emit(False, "SHA256 校验失败，文件可能已被篡改或损坏", "", "")
                         return
                 except Exception as sha_err:
                     # 校验文件缺失 / 获取失败：视为不可信，中止下载，不允许静默跳过
@@ -1089,7 +1156,10 @@ class DownloadWorker(QThread):
                     return
 
             os.replace(tmp_path, self.save_path)
-            self.download_finished.emit(True, f"已保存到: {self.save_path}")
+            # 在后台线程内校验签名（避免 PowerShell 启动耗时阻塞 UI）
+            sig_status = self.check_authenticode_signature(self.save_path)
+            self.download_finished.emit(
+                True, f"已保存到: {self.save_path}", sha256_hash.hexdigest().lower(), sig_status)
 
         except requests.exceptions.HTTPError as e:
             try:
@@ -1097,11 +1167,11 @@ class DownloadWorker(QThread):
             except OSError:
                 pass
             if not self._cancelled:
-                self.download_finished.emit(False, f"下载失败 (HTTP {e.response.status_code})")
+                self.download_finished.emit(False, f"下载失败 (HTTP {e.response.status_code})", "", "")
         except Exception as e:
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
             if not self._cancelled:
-                self.download_finished.emit(False, str(e))
+                self.download_finished.emit(False, str(e), "", "")
