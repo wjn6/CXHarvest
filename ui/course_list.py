@@ -442,31 +442,23 @@ class CourseListFluent(QWidget):
     # ==================== 数据操作 ====================
     
     def _cleanup_workers(self):
-        """清理上一轮加载线程
+        """退役上一轮加载线程
 
         课程列表会被多处重复触发（登录成功、下拉刷新、Ctrl+R）。
         若直接覆盖 load_worker，旧线程仍会 emit 结果，
         造成列表重复渲染、加载态被提前关闭。
+
+        线程退役统一委托给 ui.worker_lifecycle.retire_worker（项目共享工具）：
+        它断开全部信号、请求协作式停止，并在线程结束后安全销毁。
+        这里只负责清空引用；丢弃过期结果另由 _load_generation 负责。
         """
         worker = getattr(self, 'load_worker', None)
         if worker is None:
             return
         try:
-            # 断开数据信号即可阻止旧结果覆盖新结果
-            try:
-                worker.courses_loaded.disconnect()
-                worker.error_occurred.disconnect()
-            except (TypeError, RuntimeError):
-                pass
-            # 不调用 wait()：阻塞主线程至多 3 秒会明显卡顿，
-            # 旧线程只是一次多余的网络请求，让它自然结束后自我回收即可
-            if worker.isRunning():
-                worker.finished.connect(worker.deleteLater)
-            else:
-                worker.deleteLater()
-        except RuntimeError:
-            # 底层 C++ 对象可能已被销毁
-            pass
+            retire_worker(worker)
+        except Exception as e:
+            app_logger.debug(f"退役课程加载线程失败: {e}")
         self.load_worker = None
 
     def _is_stale(self, gen: int) -> bool:
@@ -480,10 +472,6 @@ class CourseListFluent(QWidget):
 
         self._load_generation += 1
         gen = self._load_generation
-        
-        # 安全退役在途加载线程：防止旧结果覆盖新数据 / 运行中线程被回收崩溃
-        if hasattr(self, 'load_worker'):
-            retire_worker(self.load_worker)
         
         # 显示加载状态
         self._set_loading(True)
