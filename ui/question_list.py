@@ -396,6 +396,8 @@ class QuestionListFluent(QWidget):
         self.current_homework = None
         self.login_manager = None
         self.parse_worker = None
+        # 导出流程进行中标记（见 _run_export_dialog）
+        self._export_running = False
         
         self._init_ui()
     
@@ -838,20 +840,36 @@ class QuestionListFluent(QWidget):
             is_correct = get_question_field(card.question_data, 'is_correct', None)
             card.set_selected(is_correct is False)
     
+    def _run_export_dialog(self, questions, homework_title, course_name):
+        """打开导出对话框（防重入）
+
+        导出对话框是模态的，但同一时刻只允许一个导出流程存在：
+        若 Ctrl+E 快捷键与按钮点击在边界情况下重入，
+        会出现两个 ExportWorker 并发写同一批输出文件。
+        """
+        if getattr(self, '_export_running', False):
+            app_logger.info("导出流程进行中，忽略重复触发")
+            return False
+        self._export_running = True
+        try:
+            return show_export_dialog(questions, homework_title, course_name, self.window())
+        finally:
+            self._export_running = False
+
     def _on_export_selected(self):
         """导出选中题目"""
         selected = [card.question_data for card in self.question_cards if card.is_selected]
         if selected:
             homework_title = self.current_homework.get('title', '作业题目') if self.current_homework else '作业题目'
             course_name = self.current_homework.get('course_name', '') if self.current_homework else ''
-            show_export_dialog(selected, homework_title, course_name, self.window())
+            self._run_export_dialog(selected, homework_title, course_name)
     
     def _on_export_all(self):
         """导出全部题目"""
         if self.questions:
             homework_title = self.current_homework.get('title', '作业题目') if self.current_homework else '作业题目'
             course_name = self.current_homework.get('course_name', '') if self.current_homework else ''
-            show_export_dialog(self.questions, homework_title, course_name, self.window())
+            self._run_export_dialog(self.questions, homework_title, course_name)
     
     def _set_loading(self, loading: bool):
         """设置加载状态"""

@@ -337,16 +337,29 @@ class EnterpriseLogger:
             
         self.logger.log(level, full_message)
     
-    def set_level(self, level: LogLevel):
+    def set_level(self, level: LogLevel, include_file: bool = False):
         """设置日志级别
-        
+
         Args:
             level: 新的日志级别
+            include_file: 是否同时调整文件 handler。
+
+        默认只调整控制台输出：文件日志用于事后排查，若跟着一起抬高
+        级别，运行时改一次级别就会永久丢掉此前的 DEBUG 细节。
         """
         self.level = level
-        self.logger.setLevel(level.value)
+        if include_file:
+            self.logger.setLevel(level.value)
+        else:
+            # logger 级别是所有 handler 的第一道闸门，必须保持 DEBUG，
+            # 否则 DEBUG 记录根本到不了文件 handler
+            self.logger.setLevel(LogLevel.DEBUG.value)
         for handler in self.logger.handlers:
-            handler.setLevel(level.value)
+            is_file = isinstance(handler, logging.handlers.RotatingFileHandler)
+            if is_file and not include_file:
+                handler.setLevel(LogLevel.DEBUG.value)  # 文件始终保留全部细节
+            else:
+                handler.setLevel(level.value)
 
 
 # =============================================================================

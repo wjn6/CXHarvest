@@ -18,6 +18,10 @@ class HomeworkCountManager(SessionManagerMixin):
     继承 SessionManagerMixin 获得统一的 session 管理能力，
     复用 HomeworkManager 的 URL 构建逻辑进行轻量计数。
     """
+
+    # 缓存有效期（秒）：作业数量会随学期推进变化，
+    # 永久缓存会导致整个学期都显示学期初抓到的旧数量
+    CACHE_TTL = 7 * 24 * 3600  # 7 天
     
     def __init__(self, login_manager=None):
         super().__init__(login_manager)
@@ -31,6 +35,27 @@ class HomeworkCountManager(SessionManagerMixin):
     def save_count_cache(self, cache):
         safe_json_save(cache, self.count_cache_file)
 
+    def _read_cached_count(self, course_id: str):
+        """读取未过期的缓存数量，返回 (命中, 数量)"""
+        cache = self.load_count_cache()
+        entry = cache.get(course_id)
+        if entry is None:
+            return False, 0
+        # 兼容旧的裸数值格式（只有数量、没有时间戳），视为已过期
+        if not isinstance(entry, dict):
+            return False, 0
+        import time
+        age = time.time() - float(entry.get('ts', 0))
+        if age < 0 or age > self.CACHE_TTL:
+            return False, 0
+        return True, int(entry.get('count', 0))
+
+    def _write_cached_count(self, course_id: str, count: int):
+        import time
+        cache = self.load_count_cache()
+        cache[course_id] = {'count': int(count), 'ts': time.time()}
+        self.save_count_cache(cache)
+
     def get_homework_count_for_course(self, course_info: dict) -> int:
         """获取指定课程的作业数量（优先缓存）"""
         course_id = course_info.get('id')
@@ -39,9 +64,9 @@ class HomeworkCountManager(SessionManagerMixin):
         if not course_id:
             return 0
 
-        cache = self.load_count_cache()
-        if course_id in cache:
-            return cache[course_id]
+        hit, cached = self._read_cached_count(course_id)
+        if hit:
+            return cached
 
         try:
             from .homework_manager import HomeworkManager
@@ -73,8 +98,7 @@ class HomeworkCountManager(SessionManagerMixin):
             homework_items = soup.select('li[onclick*="goTask"]') or soup.select('.bottomList ul li')
             count = len(homework_items)
 
-            cache[course_id] = count
-            self.save_count_cache(cache)
+            self._write_cached_count(course_id, count)
             app_logger.info(f"获取 {course_name} 作业数量: {count} 个")
             return count
 
