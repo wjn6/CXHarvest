@@ -110,6 +110,7 @@ class ConfigManager:
         except Exception as e:
             app_logger.error(f" 加载配置失败: {e}")
             app_logger.info(" 使用默认配置")
+            self._loaded = True
             return self._config
     
     def save_config(self) -> bool:
@@ -195,6 +196,12 @@ class ConfigManager:
     def _dict_to_config(self, data: Dict[str, Any]) -> AppConfig:
         """将字典转换为配置对象"""
         config = AppConfig()
+        if not isinstance(data, dict):
+            return config
+
+        def section(name: str) -> Dict[str, Any]:
+            value = data.get(name, {})
+            return value if isinstance(value, dict) else {}
         
         # 基本配置
         config.debug = data.get('debug', config.debug)
@@ -203,7 +210,7 @@ class ConfigManager:
         config.save_login_info = data.get('save_login_info', config.save_login_info)
         
         # 网络配置
-        network_data = data.get('network', {})
+        network_data = section('network')
         config.network = NetworkConfig(
             timeout=network_data.get('timeout', 30),
             max_retries=network_data.get('max_retries', 3),
@@ -213,7 +220,7 @@ class ConfigManager:
         )
         
         # 图片配置
-        image_data = data.get('image', {})
+        image_data = section('image')
         config.image = ImageConfig(
             max_cache_size=image_data.get('max_cache_size', 100),
             max_image_size=image_data.get('max_image_size', 1024),
@@ -222,7 +229,7 @@ class ConfigManager:
         )
         
         # UI配置
-        ui_data = data.get('ui', {})
+        ui_data = section('ui')
         config.ui = UIConfig(
             theme=ui_data.get('theme', 'light'),
             font_size=ui_data.get('font_size', 14),
@@ -233,7 +240,7 @@ class ConfigManager:
         )
         
         # 导出配置
-        export_data = data.get('export', {})
+        export_data = section('export')
         config.export = ExportConfig(
             default_format=export_data.get('default_format', 'markdown'),
             include_images=export_data.get('include_images', True),

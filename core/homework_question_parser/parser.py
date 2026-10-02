@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 
 from ..enterprise_logger import app_logger
 from ..selectors import CHAOXING_SELECTORS
+from ..exceptions import LoginError
 
 from .image_handler import ImageHandler
 from .type_detector import TypeDetector
@@ -109,14 +110,15 @@ class HomeworkQuestionParser:
             if not self.login_manager:
                 app_logger.info(" 未提供登录管理器")
                 return False
-            
-            user_info = self.login_manager.get_user_info()
-            if user_info and user_info.get('name'):
-                app_logger.info(f"登录状态正常，用户: {user_info.get('name')}")
-                return True
-            else:
-                app_logger.info("登录状态已失效")
-                return False
+
+            # get_user_info() 为改善体验会返回“学习通用户”兜底值，不能用来
+            # 判断认证状态；这里只检查是否具有可用于详情请求的会话 cookie，
+            # 真正的过期状态由随后的详情响应判定。
+            session = getattr(self.login_manager, 'session', None)
+            valid = bool(session is not None and session.cookies)
+            if not valid:
+                app_logger.info("登录状态已失效或会话为空")
+            return valid
         except Exception as e:
             app_logger.error(f"检查登录状态失败: {e}")
             return False
@@ -418,7 +420,7 @@ class HomeworkQuestionParser:
             # 验证登录状态
             if not self.check_login():
                 app_logger.error("解析作业失败: 用户未登录，请先登录")
-                return []
+                raise LoginError("用户未登录，请先登录")
 
             # 获取作业页面内容
             if self.login_manager and hasattr(self.login_manager, 'session'):
@@ -429,10 +431,10 @@ class HomeworkQuestionParser:
                 # 检测登录页面重定向（超星可能返回200但内容是登录页）
                 if '<title>用户登录</title>' in response.text or 'passport2.chaoxing.com/login' in response.text:
                     app_logger.warning("作业详情页返回了登录页面，session已失效")
-                    return []
+                    raise LoginError("登录已过期，请重新登录")
             else:
                 app_logger.info("无法获取登录session")
-                return []
+                raise LoginError("无法获取登录会话，请重新登录")
 
             # 解析HTML
             soup = BeautifulSoup(response.content, 'html.parser')
@@ -606,6 +608,8 @@ class HomeworkQuestionParser:
 
             return questions
 
+        except LoginError:
+            raise
         except Exception as e:
             app_logger.error(f"解析作业失败: {e}")
             return []

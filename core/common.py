@@ -10,6 +10,7 @@ import sys
 import json
 import time
 import re
+import tempfile
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,10 +122,17 @@ class PathManager:
             "temp": cls.get_temp_dir,
             "exports": cls.get_exports_dir,
         }
-        get_dir = dir_map.get(subdir, cls.get_data_dir)
+        if subdir not in dir_map:
+            raise ValueError(f"未知的应用数据目录: {subdir}")
+
+        get_dir = dir_map[subdir]
         base_dir = get_dir()
         resolved = (base_dir / filename).resolve()
-        if not str(resolved).startswith(str(base_dir.resolve())):
+        try:
+            # Path.relative_to 按路径组件判断边界，不会把 data-backup
+            # 误认为 data 的子目录（字符串 startswith 会有这个问题）。
+            resolved.relative_to(base_dir.resolve())
+        except ValueError:
             raise ValueError(f"路径遍历检测: {filename}")
         return resolved
 
@@ -250,9 +258,31 @@ def get_question_field(q: Dict, field: str, default=None):
 
 from .exceptions import AppError, LoginError, NetworkError, ParseError
 
-def sanitize_filename(filename: str) -> str:
-    """清理文件名中的非法字符（公共工具函数）"""
-    return re.sub(r'[\\/:*?"<>|]', '_', filename)
+def sanitize_filename(filename: str, max_length: int = 180) -> str:
+    """返回可安全用于 Windows/macOS/Linux 的单个文件名。
+
+    路径分隔符、控制字符和 Windows 非法字符会被替换；空名称及
+    Windows 保留设备名会得到安全的回退值。返回值永远不包含目录。
+    """
+    value = str(filename or "")
+    value = re.sub(r'[\x00-\x1f\\/:*?"<>|]', '_', value)
+    value = value.strip().rstrip(". ")
+
+    if not value or value in {".", ".."}:
+        value = "untitled"
+
+    reserved_names = {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+    if value.split(".", 1)[0].upper() in reserved_names:
+        value = f"_{value}"
+
+    if max_length < 1:
+        raise ValueError("max_length 必须大于 0")
+    value = value[:max_length].rstrip(". ")
+    return value or "untitled"
 
 def safe_json_load(file_path, default=None) -> Any:
     """安全加载JSON文件（接受 str 或 Path）"""
@@ -266,15 +296,35 @@ def safe_json_load(file_path, default=None) -> Any:
     return default if default is not None else {}
 
 def safe_json_save(data: Any, file_path) -> bool:
-    """安全保存JSON文件（接受 str 或 Path）"""
+    """原子保存 JSON 文件（接受 str 或 Path）。
+
+    先写入目标目录内的临时文件，再通过 ``os.replace`` 一次性替换，
+    避免程序退出或写入失败时留下半截 JSON。
+    """
+    temp_path = None
     try:
-        with open(file_path, 'w', encoding='utf-8') as f:
+        target = Path(file_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', dir=str(target.parent),
+            prefix=f".{target.name}.", suffix=".tmp", delete=False
+        ) as f:
+            temp_path = Path(f.name)
             json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(temp_path), str(target))
         return True
     except Exception as e:
         from .enterprise_logger import app_logger
         app_logger.error(f"保存JSON文件失败 {file_path}: {e}")
         return False
+    finally:
+        if temp_path is not None and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
 
 def format_timestamp(timestamp: Optional[float] = None) -> str:
     """格式化时间戳"""

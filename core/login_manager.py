@@ -801,12 +801,10 @@ class LoginManager:
     def save_cookies(self):
         """保存cookies到文件"""
         try:
-            from .common import PathManager
+            from .common import PathManager, safe_json_save
             cookies_dict = requests.utils.dict_from_cookiejar(self.session.cookies)
             session_path = PathManager.get_file_path("session.txt", "data")
-            with open(session_path, 'w', encoding='utf-8') as f:
-                json.dump(cookies_dict, f, ensure_ascii=False, indent=2)
-            return True
+            return safe_json_save(cookies_dict, session_path)
         except Exception as e:
             app_logger.error(f"保存cookies失败: {e}")
             return False
@@ -814,11 +812,10 @@ class LoginManager:
     def load_cookies(self):
         """从文件加载cookies"""
         try:
-            from .common import PathManager
+            from .common import PathManager, safe_json_load
             session_path = PathManager.get_file_path("session.txt", "data")
             if session_path.exists():
-                with open(session_path, 'r', encoding='utf-8') as f:
-                    cookies_dict = json.load(f)
+                cookies_dict = safe_json_load(session_path, {})
                 if cookies_dict:
                     self.session.cookies.update(cookies_dict)
                     app_logger.info(f"已加载保存的登录状态，cookies数量: {len(cookies_dict)}")
@@ -855,26 +852,24 @@ class LoginManager:
     def save_login_info(self, info):
         """保存登录信息（密码字段加密后存储）"""
         try:
-            from .common import PathManager
+            from .common import PathManager, safe_json_save
             # 加密敏感字段后再写入磁盘
             safe_info = dict(info)
             if 'password' in safe_info and safe_info['password']:
                 safe_info['password'] = self._encrypt_local(safe_info['password'])
                 safe_info['_encrypted'] = True  # 标记已加密
             login_path = PathManager.get_file_path("login_info.json", "data")
-            with open(login_path, 'w', encoding='utf-8') as f:
-                json.dump(safe_info, f, ensure_ascii=False, indent=2)
+            safe_json_save(safe_info, login_path)
         except Exception as e:
             app_logger.error(f"保存登录信息失败: {e}")
             
     def load_login_info(self):
         """加载登录信息（自动解密密码字段）"""
         try:
-            from .common import PathManager
+            from .common import PathManager, safe_json_load
             login_path = PathManager.get_file_path("login_info.json", "data")
             if login_path.exists():
-                with open(login_path, 'r', encoding='utf-8') as f:
-                    info = json.load(f)
+                info = safe_json_load(login_path, {})
                 # 如果有加密标记，解密密码
                 if info.get('_encrypted') and 'password' in info:
                     info['password'] = self._decrypt_local(info['password'])
@@ -883,6 +878,18 @@ class LoginManager:
         except Exception as e:
             app_logger.error(f"加载登录信息失败: {e}")
         return {}
+
+    def clear_login_info(self) -> bool:
+        """删除本地保存的账号、手机号和密码信息。"""
+        try:
+            from .common import PathManager
+            login_path = PathManager.get_file_path("login_info.json", "data")
+            if login_path.exists():
+                login_path.unlink()
+            return True
+        except Exception as e:
+            app_logger.error(f"清除登录信息失败: {e}")
+            return False
         
     def get_session(self):
         """获取当前session"""

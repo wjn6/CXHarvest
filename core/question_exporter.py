@@ -107,6 +107,15 @@ class QuestionExporter:
         if self._statistics is None:
             self._statistics = self._calculate_statistics()
         return self._statistics
+
+    @staticmethod
+    def _to_text(value, default: str = "") -> str:
+        """将平台返回的标量字段稳定地转换为文本。"""
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value
+        return str(value)
     
     def _calculate_statistics(self) -> Dict:
         """计算统计信息"""
@@ -132,24 +141,33 @@ class QuestionExporter:
                 stats['unanswered_count'] += 1
             
             # 统计分数
-            score_str = get_question_field(q, 'score', '')
-            if score_str:
-                try:
-                    score = float(re.sub(r'[^\d.]', '', str(score_str)))
-                    stats['total_score'] += score
-                except (ValueError, TypeError):
-                    pass
+            score = self._parse_score(get_question_field(q, 'score', None))
+            if score is not None:
+                stats['total_score'] += score
+
+            max_score = self._parse_score(get_question_field(q, 'total_score', None))
+            if max_score is not None:
+                stats['max_score'] += max_score
             
             # 统计题型
-            q_type = get_question_field(q, 'question_type', '未知')
+            q_type = self._to_text(
+                get_question_field(q, 'question_type', '未知'), '未知'
+            ) or '未知'
             stats['question_types'][q_type] = stats['question_types'].get(q_type, 0) + 1
             
             # 统计图片
             content_images = get_question_field(q, 'content_images', [])
+            if not isinstance(content_images, (list, tuple)):
+                content_images = []
             stats['total_images'] += len(content_images)
-            for opt in q.get('options', []):
+            options = q.get('options', [])
+            if not isinstance(options, (list, tuple)):
+                options = []
+            for opt in options:
                 if isinstance(opt, dict):
-                    stats['total_images'] += len(opt.get('images', []))
+                    images = opt.get('images', [])
+                    if isinstance(images, (list, tuple)):
+                        stats['total_images'] += len(images)
         
         # 计算正确率
         if stats['total_questions'] > 0:
@@ -158,33 +176,48 @@ class QuestionExporter:
             stats['accuracy'] = "0%"
         
         return stats
+
+    @staticmethod
+    def _parse_score(value) -> Optional[float]:
+        """从 ``2.5分``、``2/5`` 等显示文本中读取第一个数值。"""
+        if value is None or isinstance(value, bool):
+            return None
+        match = re.search(r'-?\d+(?:\.\d+)?', str(value))
+        if not match:
+            return None
+        try:
+            return float(match.group(0))
+        except ValueError:
+            return None
     
     def _get_question_content(self, q: Dict) -> str:
         """获取题目内容，清理图片占位符"""
-        content = get_question_field(q, 'content', '')
+        content = self._to_text(get_question_field(q, 'content', ''))
         # 清理图片占位符文本，如 [图片:333.jpg] 或 [图片:图片]
         content = re.sub(r'\[图片[：:][^\]]*\]', '', content).strip()
         return content
     
     def _get_question_type(self, q: Dict) -> str:
         """获取题目类型"""
-        return get_question_field(q, 'question_type', '未知')
+        return self._to_text(get_question_field(q, 'question_type', '未知'), '未知') or '未知'
     
     def _get_question_answer(self, q: Dict) -> str:
         """获取正确答案"""
-        return get_question_field(q, 'correct_answer', '')
+        return self._to_text(get_question_field(q, 'correct_answer', ''))
     
     def _get_my_answer(self, q: Dict) -> str:
         """获取我的答案"""
-        return get_question_field(q, 'my_answer', '')
+        return self._to_text(get_question_field(q, 'my_answer', ''))
     
     def _get_analysis(self, q: Dict) -> str:
         """获取解析"""
-        return get_question_field(q, 'explanation', '')
+        return self._to_text(get_question_field(q, 'explanation', ''))
     
     def _get_options(self, q: Dict) -> List:
         """获取选项列表"""
         options = q.get('options', [])
+        if not isinstance(options, (list, tuple)):
+            return []
         result = []
         for opt in options:
             if isinstance(opt, dict):
@@ -240,20 +273,27 @@ class QuestionExporter:
     
     def _get_image_bytes(self, img_data: dict) -> Optional[bytes]:
         """从图片数据获取字节流"""
+        max_bytes = 20 * 1024 * 1024
         try:
             # 优先使用data字段（base64编码）
             data = img_data.get('data', '')
             if data and data.startswith('data:image'):
                 if ',' in data:
                     base64_str = data.split(',', 1)[1]
-                    return base64.b64decode(base64_str)
+                    if len(base64_str) > (max_bytes * 4 // 3 + 8):
+                        return None
+                    decoded = base64.b64decode(base64_str, validate=True)
+                    return decoded if len(decoded) <= max_bytes else None
             
             # 尝试src字段
             src = img_data.get('src', '')
             if src and src.startswith('data:image'):
                 if ',' in src:
                     base64_str = src.split(',', 1)[1]
-                    return base64.b64decode(base64_str)
+                    if len(base64_str) > (max_bytes * 4 // 3 + 8):
+                        return None
+                    decoded = base64.b64decode(base64_str, validate=True)
+                    return decoded if len(decoded) <= max_bytes else None
             
             # URL图片 - 尝试下载
             # 优先使用认证 session（超星图片需要 cookie）；
@@ -261,12 +301,30 @@ class QuestionExporter:
             if src and src.startswith('http'):
                 try:
                     if self._session:
-                        response = self._session.get(src, timeout=10)
+                        response = self._session.get(src, timeout=(5, 10), stream=True)
                     else:
                         import requests
-                        response = requests.get(src, timeout=10)
-                    if response.status_code == 200:
-                        return response.content
+                        response = requests.get(src, timeout=(5, 10), stream=True)
+                    try:
+                        if response.status_code != 200:
+                            return None
+                        content_length = int(response.headers.get('content-length') or 0)
+                        if content_length > max_bytes:
+                            app_logger.warning(f"图片过大，已跳过: {src}")
+                            return None
+                        chunks = []
+                        total = 0
+                        for chunk in response.iter_content(64 * 1024):
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > max_bytes:
+                                app_logger.warning(f"图片下载超过大小限制，已跳过: {src}")
+                                return None
+                            chunks.append(chunk)
+                        return b''.join(chunks)
+                    finally:
+                        response.close()
                 except Exception as e:
                     app_logger.warning(f"下载图片失败: {src}, {e}")
                     return None
@@ -686,7 +744,16 @@ class QuestionExporter:
             src = str(img)
             alt = '图片'
         if src:
-            return f"![{alt}]({src})\n\n"
+            from core.html_templates import HtmlTemplate
+            safe_src = HtmlTemplate._safe_src(src)
+            if not safe_src:
+                app_logger.warning(f"Markdown 已丢弃不安全的图片地址: {str(src)[:60]}")
+                return ""
+            safe_alt = str(alt).replace('\\', '\\\\').replace('[', '\\[').replace(']', '\\]')
+            safe_src = (safe_src.replace(' ', '%20')
+                        .replace('(', '%28').replace(')', '%29')
+                        .replace('<', '%3C').replace('>', '%3E'))
+            return f"![{safe_alt}]({safe_src})\n\n"
         return ""
 
     def export_excel(self, output_path: str) -> bool:
@@ -698,7 +765,12 @@ class QuestionExporter:
 
         workbook = None
         try:
-            workbook = xlsxwriter.Workbook(output_path)
+            # 题目来自远端页面，禁止把以 =/+/-/@ 开头的文本解释成公式或 URL。
+            # 这样即使导出内容恶意，也只会作为普通单元格文本打开。
+            workbook = xlsxwriter.Workbook(output_path, {
+                'strings_to_formulas': False,
+                'strings_to_urls': False,
+            })
             worksheet = workbook.add_worksheet('题目列表')
 
             header_format = workbook.add_format({

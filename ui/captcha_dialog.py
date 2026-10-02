@@ -132,17 +132,17 @@ class CaptchaDialog(MessageBoxBase):
         self.captcha_worker = CaptchaLoadWorker(self.session, self.headers, captcha_url)
         _active_captcha_workers.add(self.captcha_worker)
         self.captcha_worker.finished.connect(
-            lambda w=self.captcha_worker: _active_captcha_workers.discard(w))
+            lambda w=self.captcha_worker: self._on_worker_finished(w))
         self.captcha_worker.loaded.connect(self._on_captcha_loaded)
         self.captcha_worker.failed.connect(self._on_captcha_failed)
         self.captcha_worker.start()
 
-    def _release_worker(self):
-        """释放已结束的工作线程"""
-        worker = self.captcha_worker
-        self.captcha_worker = None
-        if worker is not None:
-            worker.deleteLater()
+    def _on_worker_finished(self, worker):
+        """仅在线程真正结束后销毁，避免 loaded 信号与 run 返回之间的竞态。"""
+        _active_captcha_workers.discard(worker)
+        if self.captcha_worker is worker:
+            self.captcha_worker = None
+        worker.deleteLater()
 
     def _on_captcha_loaded(self, data: bytes):
         pixmap = QPixmap()
@@ -151,12 +151,10 @@ class CaptchaDialog(MessageBoxBase):
             self.captcha_label.setPixmap(scaled)
         else:
             self.captcha_label.setText("图片解析失败")
-        self._release_worker()
 
     def _on_captcha_failed(self, msg: str):
         app_logger.warning(f"验证码加载失败: {msg}")
         self.captcha_label.setText("加载失败，点击重试")
-        self._release_worker()
 
     def _stop_worker(self):
         """对话框关闭时断开工作线程的数据回调
@@ -178,9 +176,10 @@ class CaptchaDialog(MessageBoxBase):
         # 等 finished 后再 deleteLater；已结束的可直接调度销毁
         try:
             if worker.isRunning():
-                worker.finished.connect(worker.deleteLater)
+                # load_captcha 已连接统一 finished 清理；这里只断开 UI 数据回调。
+                pass
             else:
-                worker.deleteLater()
+                self._on_worker_finished(worker)
         except RuntimeError:
             pass
 

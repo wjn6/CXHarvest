@@ -3,7 +3,7 @@
 ## 目录结构
 
 ```
-@yingyong/
+CXHarvest/
 ├── main.py                 # 程序入口
 ├── requirements.txt        # 依赖列表
 ├── build.py               # 打包脚本
@@ -29,9 +29,12 @@
 │   ├── export_dialog.py   # 导出对话框
 │   ├── export_history.py  # 导出历史页
 │   └── image_preview.py   # 图片预览
-├── data/                  # 数据存储
-└── logs/                  # 日志文件
+├── tests/                 # 标准库 unittest 自动化测试
+└── data/                  # 源码运行时数据（配置、缓存、日志）
 ```
+
+发布版的运行时数据位于 `%LOCALAPPDATA%\CXHarvest`，默认导出目录位于桌面的
+`CXHarvest_exports`；源码运行时使用项目内的 `data/` 和 `exports/`。
 
 ## 核心流程
 
@@ -45,14 +48,14 @@
 
 ### 2. 数据获取流程
 ```
-CourseManager.get_courses()     → 获取课程列表
-HomeworkManager.get_homework()  → 获取作业列表（支持分页）
+CourseManager.get_course_list()     → 获取课程列表
+HomeworkManager.get_homework_list()  → 获取作业列表（支持分页）
 HomeworkQuestionParser.parse_homework_questions()  → 解析题目详情
 ```
 
 ### 3. 导出流程
 ```
-QuestionExporter → 支持 HTML/JSON/Markdown/Word/PDF
+QuestionExporter → 支持 HTML/JSON/Markdown/Word/PDF/Excel
 ExportHistoryManager → 记录导出历史
 ```
 
@@ -64,9 +67,9 @@ MainWindow
 │   └── course_selected → 加载作业列表
 ├── HomeworkList
 │   ├── homework_selected → 加载题目
-│   └── batch_export → 批量导出
+│   └── BatchExportWorker.questions_ready → 打开合集导出对话框
 ├── QuestionList
-│   └── export → 导出题目
+│   └── ExportDialog → ExportWorker → 多格式导出
 └── ExportHistory
     └── 查看导出记录
 ```

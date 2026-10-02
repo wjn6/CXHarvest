@@ -96,20 +96,38 @@ class ImageHandler:
             return None
 
         headers = {**self.headers, 'Referer': 'https://i.chaoxing.com/'}
+        max_bytes = 20 * 1024 * 1024
 
         for attempt in range(max_retries):
             try:
-                response = session.get(url, headers=headers, timeout=15)
-                response.raise_for_status()
+                response = session.get(url, headers=headers, timeout=(5, 15), stream=True)
+                try:
+                    response.raise_for_status()
 
-                content_type = (response.headers.get('content-type', '') or '').split(';')[0].strip()
-                if not content_type.startswith('image/'):
-                    return None
+                    content_type = (response.headers.get('content-type', '') or '').split(';')[0].strip()
+                    if not content_type.startswith('image/'):
+                        return None
+                    content_length = int(response.headers.get('content-length') or 0)
+                    if content_length > max_bytes:
+                        app_logger.warning(f"图片超过 20MB，已跳过: {url[:80]}")
+                        return None
 
-                return {
-                    'bytes': response.content,
-                    'content_type': content_type
-                }
+                    chunks = []
+                    total = 0
+                    for chunk in response.iter_content(64 * 1024):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > max_bytes:
+                            app_logger.warning(f"图片下载超过 20MB，已跳过: {url[:80]}")
+                            return None
+                        chunks.append(chunk)
+                    return {
+                        'bytes': b''.join(chunks),
+                        'content_type': content_type
+                    }
+                finally:
+                    response.close()
             except Exception as e:
                 if attempt < max_retries - 1:
                     time.sleep(0.5 * (attempt + 1))
@@ -158,7 +176,7 @@ class ImageHandler:
             
             # 对于已经是base64的数据，直接返回
             if url.startswith('data:image'):
-                return url
+                return url if len(url) <= 28 * 1024 * 1024 else None
 
             cache_key = f"{1 if compress else 0}:{url}"
             with self._cache_lock:

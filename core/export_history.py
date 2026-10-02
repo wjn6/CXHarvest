@@ -35,8 +35,9 @@ class ExportHistoryManager:
         """从文件加载历史记录"""
         try:
             if os.path.exists(self.history_file):
-                with open(self.history_file, 'r', encoding='utf-8') as f:
-                    self._history = json.load(f)
+                from .common import safe_json_load
+                data = safe_json_load(self.history_file, [])
+                self._history = data if isinstance(data, list) else []
                 app_logger.debug(f"加载了 {len(self._history)} 条导出历史")
         except Exception as e:
             app_logger.warning(f"加载导出历史失败: {e}")
@@ -45,8 +46,9 @@ class ExportHistoryManager:
     def _save_history(self):
         """保存历史记录到文件"""
         try:
-            with open(self.history_file, 'w', encoding='utf-8') as f:
-                json.dump(self._history, f, ensure_ascii=False, indent=2)
+            from .common import safe_json_save
+            if not safe_json_save(self._history, self.history_file):
+                raise OSError("原子写入失败")
         except Exception as e:
             app_logger.warning(f"保存导出历史失败: {e}")
     
@@ -156,7 +158,10 @@ class ExportHistoryManager:
             fmt = record.get("export_format", "未知")
             formats[fmt] = formats.get(fmt, 0) + 1
             courses.add(record.get("course_name", ""))
-            total_questions += record.get("question_count", 0)
+            try:
+                total_questions += int(record.get("question_count", 0) or 0)
+            except (TypeError, ValueError):
+                pass
         
         return {
             "total_exports": len(self._history),

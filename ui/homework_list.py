@@ -57,6 +57,11 @@ class BatchExportWorker(QThread):
         self.homework_list = homework_list
         self.login_manager = login_manager
         self.course_name = course_name
+        self._cancelled = False
+
+    def cancel(self):
+        """请求在当前作业解析完成后停止后续批处理。"""
+        self._cancelled = True
     
     def run(self):
         try:
@@ -66,6 +71,8 @@ class BatchExportWorker(QThread):
             parser = HomeworkQuestionParser(self.login_manager)
             
             for i, homework in enumerate(self.homework_list):
+                if self._cancelled or self.isInterruptionRequested():
+                    return
                 title = homework.get('title', '未知作业')
                 self.progress.emit(f'正在解析: {title}', int((i / total) * 100))
                 homework_url = homework.get('url', '')
@@ -75,8 +82,9 @@ class BatchExportWorker(QThread):
                     all_questions.extend(questions)
                     homework_titles.append(title)
             
-            self.progress.emit('解析完成', 100)
-            self.questions_ready.emit(all_questions, homework_titles, self.course_name)
+            if not self._cancelled:
+                self.progress.emit('解析完成', 100)
+                self.questions_ready.emit(all_questions, homework_titles, self.course_name)
             
         except Exception as e:
             self.error.emit(str(e))
@@ -84,13 +92,21 @@ class BatchExportWorker(QThread):
 
 def _parse_homework_status(raw_status: str):
     """统一解析作业状态，返回 (display_text, color, is_completed, is_expired)"""
-    s = str(raw_status)
-    if "完成" in s or "提交" in s or s == '1':
-        return "已完成", "#27ae60", True, False
-    if "过期" in s or "截止" in s or s == '2':
+    s = str(raw_status or '').strip()
+    lowered = s.lower()
+    # 否定词必须先判断；旧逻辑按“完成/提交”子串匹配，会把“未完成、待提交”
+    # 错误标记为已完成。
+    if any(word in s for word in ("未完成", "待完成", "未提交", "待提交")) \
+            or lowered in {'0', 'pending', 'not submitted'}:
+        return "待完成", "#e74c3c", False, False
+    if "过期" in s or "已截止" in s or lowered in {'2', 'expired'}:
         return "已过期", "#95a5a6", False, True
-    if "批阅" in s:
+    if any(word in s for word in ("待批阅", "待批改", "待评分", "批阅中", "批改中")) \
+            or lowered in {'reviewing', 'pending review'}:
         return "待批阅", "#f39c12", False, False
+    if any(word in s for word in ("已完成", "已提交", "提交成功", "已批阅", "已批改", "已评分")) \
+            or lowered in {'1', '完成', '提交', 'completed', 'submitted', 'graded'}:
+        return "已完成", "#27ae60", True, False
     return "待完成", "#e74c3c", False, False
 
 
@@ -355,10 +371,30 @@ class HomeworkListFluent(QWidget):
         """加载作业列表"""
         # 清理之前的线程
         self._cleanup_workers()
+
+        previous_key = self._course_key(self.current_course)
+        next_key = self._course_key(course_info)
+        if previous_key != next_key:
+            # 切换课程时不能在失败后重新显示上一门课程的作业。
+            self.homework_list = []
+            self.filtered_list = []
+            self.table.setRowCount(0)
+            self.table.hide()
+            self.empty_label.setText("正在加载作业列表...")
+            self.login_hint_btn.hide()
+            self.empty_container.show()
+            self.search_edit.blockSignals(True)
+            self.status_combo.blockSignals(True)
+            self.search_edit.clear()
+            self.status_combo.setCurrentIndex(0)
+            self.search_edit.blockSignals(False)
+            self.status_combo.blockSignals(False)
         
         # 切换课程时清空上一课程的勾选
         self._selected_ids = set()
         self.select_all_cb.setChecked(False)
+        self._update_selection_count()
+        self._update_stats()
         
         self.current_course = course_info
         self.login_manager = login_manager
@@ -374,8 +410,22 @@ class HomeworkListFluent(QWidget):
         self.load_worker = HomeworkLoadWorker(course_info, login_manager)
         self.load_worker.homework_loaded.connect(self._on_homework_loaded)
         self.load_worker.error_occurred.connect(self._on_load_error)
-        self.load_worker.finished.connect(lambda: self._set_loading(False))
+        self.load_worker.finished.connect(self._on_load_finished)
         self.load_worker.start()
+
+    @staticmethod
+    def _course_key(course_info: dict) -> str:
+        if not course_info:
+            return ""
+        return str(course_info.get('id') or course_info.get('link') or course_info.get('name') or '')
+
+    def _on_load_finished(self):
+        worker = self.sender()
+        if self.load_worker is worker:
+            self.load_worker = None
+            self._set_loading(False)
+        if worker is not None:
+            worker.deleteLater()
     
     def _cleanup_workers(self):
         """安全退役工作线程（不阻塞 UI，防止运行中 QThread 被回收崩溃）"""
@@ -386,17 +436,31 @@ class HomeworkListFluent(QWidget):
     
     def _on_homework_loaded(self, homework_list: list):
         """作业加载完成"""
+        if self.sender() is not None and self.sender() is not self.load_worker:
+            return
         self.homework_list = homework_list
-        self.filtered_list = homework_list.copy()
-        self._display_homework()
+        self._filter_homework()
         self._update_stats()
         
         app_logger.info(f"加载了 {len(homework_list)} 个作业")
     
     def _on_load_error(self, error_msg: str):
         """加载错误"""
+        if self.sender() is not None and self.sender() is not self.load_worker:
+            return
+        self.homework_list = []
+        self.filtered_list = []
+        self._selected_ids.clear()
+        self.table.setRowCount(0)
+        self._update_selection_count()
+        self._update_stats()
+        expired = '登录' in error_msg and any(k in error_msg for k in ('过期', '失效', '未登录'))
+        self.empty_label.setText("登录已失效，请重新登录" if expired else "作业加载失败，请重试")
+        self.login_hint_btn.setVisible(expired)
+        self.table.hide()
+        self.empty_container.show()
         InfoBar.error(
-            title="加载失败",
+            title="登录已失效" if expired else "加载失败",
             content=error_msg,
             orient=Qt.Horizontal,
             isClosable=True,
@@ -404,10 +468,14 @@ class HomeworkListFluent(QWidget):
             duration=5000,
             parent=self.window()
         )
+        if expired:
+            self.login_required.emit()
         app_logger.error(f"作业加载失败: {error_msg}")
     
     def _display_homework(self):
         """显示作业列表"""
+        sorting_enabled = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         
         if not self.filtered_list:
@@ -420,6 +488,11 @@ class HomeworkListFluent(QWidget):
                 self.empty_label.setText("暂无作业数据，请先登录")
                 self.login_hint_btn.show()
             self.empty_container.show()
+            self.select_all_cb.blockSignals(True)
+            self.select_all_cb.setChecked(False)
+            self.select_all_cb.blockSignals(False)
+            self._update_selection_count()
+            self.table.setSortingEnabled(sorting_enabled)
             return
         
         self.empty_container.hide()
@@ -458,8 +531,14 @@ class HomeworkListFluent(QWidget):
             view_btn.clicked.connect(lambda checked, h=homework: self._on_view_clicked(h))
             self.table.setCellWidget(row, 4, view_btn)
         
-        # 排序开启时插入 Item 可能触发自动重排，最后按 Item 实际顺序重建控件保证对齐
+        # 填充期间禁用排序，避免标题 Item 被移动后状态/截止时间写入错误行。
+        self.table.setSortingEnabled(sorting_enabled)
         self._rebuild_cell_widgets()
+        visible_keys = {self._hw_key(h) for h in self.filtered_list}
+        self.select_all_cb.blockSignals(True)
+        self.select_all_cb.setChecked(bool(visible_keys) and visible_keys.issubset(self._selected_ids))
+        self.select_all_cb.blockSignals(False)
+        self._update_selection_count()
     
     @staticmethod
     def _hw_key(homework: dict) -> str:
@@ -502,7 +581,7 @@ class HomeworkListFluent(QWidget):
         self.filtered_list = []
         for hw in self.homework_list:
             # 关键词匹配
-            title = hw.get('title', '').lower()
+            title = str(hw.get('title') or '').lower()
             if keyword and keyword not in title:
                 continue
             
@@ -547,14 +626,19 @@ class HomeworkListFluent(QWidget):
         count = len(self._selected_ids)
         self.selected_label.setText(f"已选择 {count} 项")
         self.batch_export_btn.setEnabled(count > 0)
+        visible_keys = {self._hw_key(h) for h in self.filtered_list}
+        self.select_all_cb.blockSignals(True)
+        self.select_all_cb.setChecked(bool(visible_keys) and visible_keys.issubset(self._selected_ids))
+        self.select_all_cb.blockSignals(False)
     
     def _on_select_all_changed(self, state):
         """全选状态改变"""
         checked = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
+        visible_keys = {self._hw_key(h) for h in self.filtered_list}
         if checked:
-            self._selected_ids = {self._hw_key(h) for h in self.filtered_list}
+            self._selected_ids.update(visible_keys)
         else:
-            self._selected_ids.clear()
+            self._selected_ids.difference_update(visible_keys)
         for row in range(self.table.rowCount()):
             cb = self.table.cellWidget(row, 0)
             if cb:
@@ -575,10 +659,14 @@ class HomeworkListFluent(QWidget):
     
     def _on_batch_export(self):
         """批量导出"""
+        if not self.loading_container.isHidden():
+            return
         if not self._selected_ids:
             return
-        # 按选中集合导出，避免排序后 cellWidget 与行错位导致导出错误作业
-        key_map = {self._hw_key(h): h for h in self.filtered_list}
+        if self.batch_worker is not None and self.batch_worker.isRunning():
+            return
+        # 从完整列表取已选项；筛选只影响显示，不应悄悄丢掉此前选中的作业。
+        key_map = {self._hw_key(h): h for h in self.homework_list}
         selected = [key_map[k] for k in self._selected_ids if k in key_map]
         if not selected:
             return
@@ -593,7 +681,15 @@ class HomeworkListFluent(QWidget):
         self.batch_worker.progress.connect(self._on_batch_progress)
         self.batch_worker.questions_ready.connect(self._on_batch_questions_ready)
         self.batch_worker.error.connect(self._on_batch_error)
+        self.batch_worker.finished.connect(self._on_batch_finished)
         self.batch_worker.start()
+
+    def _on_batch_finished(self):
+        worker = self.sender()
+        if self.batch_worker is worker:
+            self.batch_worker = None
+        if worker is not None:
+            worker.deleteLater()
     
     def _on_batch_progress(self, message: str, percentage: int):
         """批量解析进度"""
@@ -626,8 +722,9 @@ class HomeworkListFluent(QWidget):
     def _on_batch_error(self, error_msg: str):
         """批量解析错误"""
         self._set_loading(False)
+        expired = '登录' in error_msg and any(k in error_msg for k in ('过期', '失效', '未登录'))
         InfoBar.error(
-            title="解析失败",
+            title="登录已失效" if expired else "解析失败",
             content=error_msg,
             orient=Qt.Horizontal,
             isClosable=True,
@@ -635,6 +732,8 @@ class HomeworkListFluent(QWidget):
             duration=5000,
             parent=self.window()
         )
+        if expired:
+            self.login_required.emit()
     
     def _on_refresh(self):
         """刷新"""
@@ -646,23 +745,34 @@ class HomeworkListFluent(QWidget):
         self.search_edit.setEnabled(not loading)
         self.status_combo.setEnabled(not loading)
         self.refresh_btn.setEnabled(not loading)
+        self.batch_export_btn.setEnabled(not loading and bool(self._selected_ids))
         
         if loading:
+            if self.loading_container.isHidden():
+                self._content_before_loading = (
+                    'table' if not self.table.isHidden() else 'empty'
+                )
             self.table.hide()
             self.empty_container.hide()
             self.loading_container.show()
         else:
             self.loading_container.hide()
-            # 不在这里决定显示 table 还是 empty_container
-            # 由 _display_homework() / _on_homework_loaded() 负责
+            # 成功回调会主动显示 table/empty；失败或取消时恢复加载前页面。
+            if self.table.isHidden() and self.empty_container.isHidden():
+                if getattr(self, '_content_before_loading', 'empty') == 'table' and self.filtered_list:
+                    self.table.show()
+                else:
+                    self.empty_container.show()
     
     def clear_data(self):
         """清空数据"""
+        self._cleanup_workers()
         self.homework_list = []
         self.filtered_list = []
         self.current_course = None
         self._selected_ids = set()
         self.select_all_cb.setChecked(False)
+        self._update_selection_count()
         self.table.setRowCount(0)
         self.course_label.setText("")
         
@@ -671,6 +781,7 @@ class HomeworkListFluent(QWidget):
         self.login_hint_btn.hide()
         self.table.hide()
         self.empty_container.show()
+        self._set_loading(False)
         
         # 重置统计
         if hasattr(self.pending_card, '_value_label'):

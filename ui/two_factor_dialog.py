@@ -293,6 +293,9 @@ class ResetPasswordDialog(MessageBoxBase):
         if pwd != pwd2:
             self._set_status("两次输入的密码不一致", "#e74c3c")
             return
+        if not any(ch.isdigit() for ch in pwd) or not any(not ch.isdigit() for ch in pwd):
+            self._set_status("密码需同时包含数字和字母或符号", "#e74c3c")
+            return
         # 弹出点选安全验证，通过后提交改密
         dialog = ClickCaptchaDialog(self.window())
         dialog.exec()
@@ -309,6 +312,9 @@ class ResetPasswordDialog(MessageBoxBase):
 
     def _on_ok(self):
         self._set_status("密码重置成功", "#27ae60")
+        worker = self._worker
+        self._worker = None
+        retire_worker(worker)
         self.reset_ok.emit()
         self.accept()
 
@@ -447,9 +453,14 @@ class TwoFactorDialog(MessageBoxBase):
             dialog = ResetPasswordDialog(self.login_manager, result['userid'],
                                          result['token'], self.window())
             dialog.reset_ok.connect(self._on_reset_ok)
-            dialog.exec()
+            if not dialog.exec():
+                self.verify_btn.setEnabled(True)
+                self._set_status("已取消密码重置，可重新验证", "#888888")
             return
         self._set_status("安全验证成功", "#27ae60")
+        worker = self._check_worker
+        self._check_worker = None
+        retire_worker(worker)
         self.verified.emit()
         self.accept()
 

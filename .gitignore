@@ -35,8 +35,7 @@ build/
 dist_nuitka/
 *.spec
 
-# ========== 构建脚本 (本地使用) ==========
-build.py
+# ========== 本地构建产物 ==========
 build_nuitka.py
 version_info.txt
 
@@ -57,8 +56,9 @@ htmlcov/
 *.tmp
 *.bak
 
-# ========== 本地集成测试脚本与凭据（不提交 GitHub） ==========
-tests/
+# ========== 本地集成测试数据与凭据（不提交 GitHub） ==========
+tests/local/
+tests/fixtures/private/
 
 # ========== 安装包产物 ==========
 installer/*.exe
