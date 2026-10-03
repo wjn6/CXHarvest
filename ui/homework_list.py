@@ -5,17 +5,15 @@
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QHeaderView,
-    QAbstractItemView, QTableWidgetItem, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QHeaderView, QTableWidgetItem
 )
 from PySide6.QtCore import Qt, Signal, QThread
-from PySide6.QtGui import QFont, QColor
 
 from qfluentwidgets import (
-    CardWidget, SimpleCardWidget,
-    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
+    SimpleCardWidget,
+    SubtitleLabel, TitleLabel, CaptionLabel,
     PrimaryPushButton, PushButton, TransparentPushButton, ToolButton,
-    SearchLineEdit, ComboBox, CheckBox, IndeterminateProgressBar,
+    SearchLineEdit, ComboBox, CheckBox,
     InfoBar, InfoBarPosition, TableWidget
 )
 from qfluentwidgets import FluentIcon as FIF
@@ -23,7 +21,16 @@ from qfluentwidgets import FluentIcon as FIF
 from core.enterprise_logger import app_logger
 from core.homework_manager import HomeworkManager
 from core.homework_question_parser import HomeworkQuestionParser
+from ui import palette
+from ui.screen_metrics import apply_page_margins
+from ui.state_views import EmptyStateView, LoadingView
+from ui.table_utils import (KeyedItem, install_adaptive_width, polish_table,
+                            relocate_row_widgets,
+                            status_item as table_status_item)
 from ui.worker_lifecycle import retire_worker
+
+import re
+import time
 
 
 class HomeworkLoadWorker(QThread):
@@ -84,14 +91,39 @@ class BatchExportWorker(QThread):
 
 def _parse_homework_status(raw_status: str):
     """统一解析作业状态，返回 (display_text, color, is_completed, is_expired)"""
-    s = str(raw_status)
-    if "完成" in s or "提交" in s or s == '1':
+    s = str(raw_status).strip()
+    if s == '1':
         return "已完成", "#27ae60", True, False
-    if "过期" in s or "截止" in s or s == '2':
+    if s == '2':
         return "已过期", "#95a5a6", False, True
-    if "批阅" in s:
+    # 先判"待/未"，否则 "待完成"、"待提交" 会因含"完成/提交"被误判为已完成
+    if "批阅" in s or "评分" in s:
         return "待批阅", "#f39c12", False, False
+    if "过期" in s or "截止" in s:
+        return "已过期", "#95a5a6", False, True
+    if s.startswith('待') or s.startswith('未') or "未交" in s or "未提交" in s:
+        return "待完成", "#e74c3c", False, False
+    if "完成" in s or "提交" in s:
+        return "已完成", "#27ae60", True, False
     return "待完成", "#e74c3c", False, False
+
+
+# 状态列排序秩：越靠前越"急"
+_STATUS_RANK = {"待完成": 0, "待批阅": 1, "已完成": 2, "已过期": 3}
+
+# 状态色块用的语义色 token（配色定义见 ui.palette）
+_STATUS_TOKEN = {"待完成": "danger", "待批阅": "warning",
+                 "已完成": "success", "已过期": "neutral"}
+
+
+def _deadline_sort_key(deadline: str) -> str:
+    """把 '2026-03-05 10:00' / '03-05 10:00' 归一为可字典序比较的数字串"""
+    digits = re.sub(r'\D', '', deadline or '')
+    if not digits:
+        return '9' * 14          # 无截止时间排最后
+    if len(digits) <= 8:         # 页面省略了年份，补当前年再比
+        digits = time.strftime('%Y') + digits
+    return digits.rjust(12, '0')[:14]
 
 
 class HomeworkListFluent(QWidget):
@@ -110,11 +142,20 @@ class HomeworkListFluent(QWidget):
         self.login_manager = None
         self.load_worker = None
         self.batch_worker = None
+        # 行内“查看”按钮按作业 key 复用，排序/筛选只搬不重建
+        self._view_buttons = {}
+        self._syncing_selection = False
+        self._title_col_adapter = None
         # 勾选集合：按作业唯一键记录，与表格行位置解耦（排序/筛选不丢失、不错位）
         self._selected_ids = set()
         
         self._init_ui()
     
+    def resizeEvent(self, event):
+        """窄屏收紧左右留白，把宽度让给内容"""
+        super().resizeEvent(event)
+        apply_page_margins(self, 20, 20)
+
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 20, 36, 20)
@@ -237,11 +278,7 @@ class HomeworkListFluent(QWidget):
         
         # 刷新按钮
         self.refresh_btn = ToolButton(FIF.SYNC, self)
-        refresh_btn_font = self.refresh_btn.font()
-        if refresh_btn_font.pointSize() <= 0:
-            base_point_size = self.font().pointSize()
-            refresh_btn_font.setPointSize(base_point_size if base_point_size > 0 else 9)
-            self.refresh_btn.setFont(refresh_btn_font)
+        palette.ensure_readable_font(self.refresh_btn, self)
         self.refresh_btn.clicked.connect(self._on_refresh)
         toolbar_layout.addWidget(self.refresh_btn)
         
@@ -252,76 +289,43 @@ class HomeworkListFluent(QWidget):
         self.table = TableWidget(self)
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["选择", "作业标题", "状态", "截止时间", "操作"])
-        
-        # 设置列宽
+
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.Fixed)
-        header.setSectionResizeMode(3, QHeaderView.Fixed)
-        header.setSectionResizeMode(4, QHeaderView.Fixed)
-        
-        self.table.setColumnWidth(0, 50)
-        self.table.setColumnWidth(2, 80)
-        self.table.setColumnWidth(3, 150)
-        self.table.setColumnWidth(4, 100)
-        
-        # 设置选择模式
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header.setMinimumSectionSize(56)
+        self.table.setColumnWidth(0, 48)
+        # 标题列：视口够宽就拉伸，不够宽保 220 起并交给横向滚动
+        self._title_col_adapter = install_adaptive_width(self.table, 1, min_width=220)
+
+        polish_table(self.table, row_height=44, hand_cursor=True)
+        self.table.itemChanged.connect(self._on_item_changed)
+
         # 启用排序
         self.table.setSortingEnabled(True)
         header.setSortIndicatorShown(True)
-        # 排序只移动 Item 不移动 cellWidget，排序后重建两列控件以保持行对齐
-        self.table.horizontalHeader().sortIndicatorChanged.connect(self._rebuild_cell_widgets)
-        
+        header.setSortIndicator(1, Qt.AscendingOrder)
+        # 排序只移动 Item 不移动 cellWidget，排序后把“查看”按钮搬回对应行
+        self.table.horizontalHeader().sortIndicatorChanged.connect(self._sync_row_widgets)
+
         # 双击进入详情
         self.table.cellDoubleClicked.connect(self._on_row_double_clicked)
         
         parent_layout.addWidget(self.table, 1)
         
-        # 加载状态容器（居中显示）
-        self.loading_container = QFrame(self)
-        self.loading_container.setStyleSheet("background: transparent;")
-        loading_layout = QVBoxLayout(self.loading_container)
-        loading_layout.setContentsMargins(0, 80, 0, 0)
-        loading_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        
-        # 使用进度条替代加载圈
-        self.loading_bar = IndeterminateProgressBar(self.loading_container)
-        self.loading_bar.setFixedWidth(200)
-        
-        self.loading_label = CaptionLabel("正在加载作业列表...", self.loading_container)
-        self.loading_label.setStyleSheet("color: #888888;")
-        
-        loading_layout.addWidget(self.loading_bar, alignment=Qt.AlignCenter)
-        loading_layout.addSpacing(12)
-        loading_layout.addWidget(self.loading_label, alignment=Qt.AlignCenter)
-        loading_layout.addStretch()
-        
+        # 加载态（loading_label 保留给解析进度文案）
+        self.loading_container = LoadingView("正在加载作业列表...", self)
+        self.loading_label = self.loading_container.label
         parent_layout.addWidget(self.loading_container, 1)
         self.loading_container.hide()
-        
-        # 空状态容器（居中显示）
-        self.empty_container = QFrame(self)
-        self.empty_container.setStyleSheet("background: transparent;")
-        empty_layout = QVBoxLayout(self.empty_container)
-        empty_layout.setContentsMargins(0, 80, 0, 0)
-        empty_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        
-        self.empty_label = BodyLabel("请选择课程查看作业", self.empty_container)
-        
-        self.login_hint_btn = PrimaryPushButton("点击登录", self.empty_container)
-        self.login_hint_btn.setFixedWidth(120)
-        self.login_hint_btn.clicked.connect(lambda: self.login_required.emit())
-        self.login_hint_btn.hide()  # 默认隐藏
-        
-        empty_layout.addWidget(self.empty_label, alignment=Qt.AlignCenter)
-        empty_layout.addSpacing(16)
-        empty_layout.addWidget(self.login_hint_btn, alignment=Qt.AlignCenter)
-        empty_layout.addStretch()
-        
+
+        # 空状态
+        self.empty_container = EmptyStateView("请选择课程查看作业",
+                                              icon=FIF.DOCUMENT, action_text="点击登录",
+                                              parent=self)
+        self.empty_container.action_clicked.connect(lambda: self.login_required.emit())
         parent_layout.addWidget(self.empty_container, 1)
         self.empty_container.hide()
     
@@ -388,10 +392,23 @@ class HomeworkListFluent(QWidget):
         """作业加载完成"""
         self.homework_list = homework_list
         self.filtered_list = homework_list.copy()
+        self._remember_homework_count(len(homework_list))
         self._display_homework()
         self._update_stats()
-        
+
         app_logger.info(f"加载了 {len(homework_list)} 个作业")
+
+    def _remember_homework_count(self, count: int):
+        """把真实作业数回写本地缓存，课程列表下次直接读，省一次列表请求"""
+        course_id = (self.current_course or {}).get('id')
+        if not course_id:
+            return
+        try:
+            from core.homework_count_manager import HomeworkCountManager
+            HomeworkCountManager().remember_count(course_id, count)
+            self.current_course['homework_count'] = count
+        except Exception as e:
+            app_logger.debug(f"回写作业数量失败: {e}")
     
     def _on_load_error(self, error_msg: str):
         """加载错误"""
@@ -414,53 +431,63 @@ class HomeworkListFluent(QWidget):
             self.table.hide()
             # 根据登录状态显示不同提示
             if self.login_manager:
-                self.empty_label.setText("暂无作业数据")
-                self.login_hint_btn.hide()
+                self.empty_container.set_message("暂无作业数据", show_action=False)
             else:
-                self.empty_label.setText("暂无作业数据，请先登录")
-                self.login_hint_btn.show()
+                self.empty_container.set_message("暂无作业数据，请先登录", show_action=True)
             self.empty_container.show()
             return
         
         self.empty_container.hide()
         self.table.show()
+
+        # 排序开启时逐行插入会反复触发整表重排，填充期间先关掉
+        sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(self.filtered_list))
-        
+
         for row, homework in enumerate(self.filtered_list):
-            # 选择框（勾选状态按作业唯一键记录，与行位置解耦）
-            cb = CheckBox(self)
-            cb.setChecked(self._hw_key(homework) in self._selected_ids)
-            cb.stateChanged.connect(lambda state, h=homework: self._on_cb_toggled(h, state))
-            self.table.setCellWidget(row, 0, cb)
-            
-            # 标题
+            key = self._hw_key(homework)
+
+            # 勾选：用可勾选 Item 而非 cellWidget，排序时随行走且每行少一个控件
+            check_item = QTableWidgetItem()
+            check_item.setFlags((check_item.flags() | Qt.ItemIsUserCheckable)
+                                & ~Qt.ItemIsEditable)
+            check_item.setCheckState(Qt.Checked if key in self._selected_ids else Qt.Unchecked)
+            check_item.setData(Qt.UserRole, key)
+            check_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, 0, check_item)
+
+            # 标题（截断后 tooltip 给出全文，排序按标题文本）
             title = homework.get('title', '未知作业')
-            title_item = QTableWidgetItem(title)
+            title_item = KeyedItem(title)
             title_item.setData(Qt.UserRole, homework)
             self.table.setItem(row, 1, title_item)
-            
-            # 状态处理
+
+            # 状态：圆点色块 + 中文，按 待完成→待批阅→已完成→已过期 排序
             raw_status = str(homework.get('status', '待完成'))
-            display_status, status_color, _, _ = _parse_homework_status(raw_status)
-            
-            status_item = QTableWidgetItem(display_status)
-            status_item.setForeground(QColor(status_color))
-            self.table.setItem(row, 2, status_item)
-            
-            # 截止时间
+            display_status, _, _, _ = _parse_homework_status(raw_status)
+            status_cell = table_status_item(display_status,
+                                            _STATUS_RANK.get(display_status, 9),
+                                            _STATUS_TOKEN.get(display_status, 'text_muted'))
+            self.table.setItem(row, 2, status_cell)
+
+            # 截止时间：文本按原样显示，排序用归一化数字串
             deadline = homework.get('deadline', '')  # 注意：manager返回的是deadline不是endTime
-            deadline_item = QTableWidgetItem(deadline)
+            deadline_item = KeyedItem(deadline, _deadline_sort_key(deadline))
             self.table.setItem(row, 3, deadline_item)
-            
-            # 操作按钮
-            view_btn = PushButton("查看", self)
-            view_btn.setFixedWidth(80)
-            view_btn.clicked.connect(lambda checked, h=homework: self._on_view_clicked(h))
+
+            # 操作按钮：同一作业复用同一个按钮，排序/筛选只搬不移除
+            view_btn = self._view_buttons.get(key)
+            if view_btn is None:
+                view_btn = PushButton("查看", self)
+                view_btn.setFixedWidth(64)
+                view_btn.clicked.connect(lambda checked, h=homework: self._on_view_clicked(h))
+                self._view_buttons[key] = view_btn
             self.table.setCellWidget(row, 4, view_btn)
-        
-        # 排序开启时插入 Item 可能触发自动重排，最后按 Item 实际顺序重建控件保证对齐
-        self._rebuild_cell_widgets()
-    
+
+        self.table.setSortingEnabled(sorting)
+        self._sync_row_widgets()
+
     @staticmethod
     def _hw_key(homework: dict) -> str:
         """作业唯一标识：url 优先，退化为 title"""
@@ -468,31 +495,30 @@ class HomeworkListFluent(QWidget):
         if url:
             return f"url:{url}"
         return f"title:{homework.get('title', '')}"
-    
-    def _on_cb_toggled(self, homework: dict, state):
+
+    def _row_key(self, row: int):
+        item = self.table.item(row, 0)
+        return item.data(Qt.UserRole) if item else None
+
+    def _on_item_changed(self, item):
         """勾选状态改变：按作业唯一键维护选中集合"""
-        checked = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
-        if checked:
-            self._selected_ids.add(self._hw_key(homework))
+        if item.column() != 0 or self._syncing_selection:
+            return
+        key = item.data(Qt.UserRole)
+        if not key:
+            return
+        if item.checkState() == Qt.Checked:
+            self._selected_ids.add(key)
         else:
-            self._selected_ids.discard(self._hw_key(homework))
+            self._selected_ids.discard(key)
         self._update_selection_count()
-    
-    def _rebuild_cell_widgets(self, column=None, order=None):
-        """排序后重建 checkbox / 查看按钮，保持与移动后的 Item 行对齐"""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 1)
-            homework = item.data(Qt.UserRole) if item else None
-            if not homework:
-                continue
-            cb = CheckBox(self)
-            cb.setChecked(self._hw_key(homework) in self._selected_ids)
-            cb.stateChanged.connect(lambda state, h=homework: self._on_cb_toggled(h, state))
-            self.table.setCellWidget(row, 0, cb)
-            view_btn = PushButton("查看", self)
-            view_btn.setFixedWidth(80)
-            view_btn.clicked.connect(lambda checked, h=homework: self._on_view_clicked(h))
-            self.table.setCellWidget(row, 4, view_btn)
+
+    def _sync_row_widgets(self, column=None, order=None):
+        """排序/筛选后把“查看”按钮搬回其作业所在行，并回收不可见行的按钮"""
+        keys = [k for k in (self._row_key(row) for row in range(self.table.rowCount())) if k]
+        relocate_row_widgets(self.table, 4, self._view_buttons, keys)
+        if self._title_col_adapter is not None:
+            self._title_col_adapter.maybe_apply()
     
     def _filter_homework(self):
         """筛选作业"""
@@ -549,16 +575,23 @@ class HomeworkListFluent(QWidget):
         self.batch_export_btn.setEnabled(count > 0)
     
     def _on_select_all_changed(self, state):
-        """全选状态改变"""
+        """全选/取消当前筛选结果，不在筛选内的行保持原勾选"""
         checked = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
+        visible_keys = {self._hw_key(h) for h in self.filtered_list}
         if checked:
-            self._selected_ids = {self._hw_key(h) for h in self.filtered_list}
+            self._selected_ids |= visible_keys
         else:
-            self._selected_ids.clear()
-        for row in range(self.table.rowCount()):
-            cb = self.table.cellWidget(row, 0)
-            if cb:
-                cb.setChecked(checked)
+            self._selected_ids -= visible_keys
+        self._syncing_selection = True
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item is not None:
+                    item.setCheckState(
+                        Qt.Checked if item.data(Qt.UserRole) in self._selected_ids
+                        else Qt.Unchecked)
+        finally:
+            self._syncing_selection = False
         self._update_selection_count()
     
     def _on_row_double_clicked(self, row, col):
@@ -577,9 +610,9 @@ class HomeworkListFluent(QWidget):
         """批量导出"""
         if not self._selected_ids:
             return
-        # 按选中集合导出，避免排序后 cellWidget 与行错位导致导出错误作业
-        key_map = {self._hw_key(h): h for h in self.filtered_list}
-        selected = [key_map[k] for k in self._selected_ids if k in key_map]
+        # 勾选集合是全局的（筛选只影响可见行），按课程作业原始顺序取全部勾选项，
+        # 与"已选择 N 项"的计数口径保持一致
+        selected = [h for h in self.homework_list if self._hw_key(h) in self._selected_ids]
         if not selected:
             return
         
@@ -618,7 +651,8 @@ class HomeworkListFluent(QWidget):
         # 弹出导出对话框
         from ui.export_dialog import ExportDialog
         homework_title = f"{len(homework_titles)}个作业合集"
-        dialog = ExportDialog(questions, homework_title, course_name, self.window())
+        dialog = ExportDialog(questions, homework_title, course_name, self.window(),
+                              session=getattr(self.login_manager, 'session', None))
         dialog.exec()
         
         app_logger.info(f"批量导出: {len(questions)} 道题目，来自 {len(homework_titles)} 个作业")
@@ -664,11 +698,15 @@ class HomeworkListFluent(QWidget):
         self._selected_ids = set()
         self.select_all_cb.setChecked(False)
         self.table.setRowCount(0)
+        # 释放复用的“查看”按钮，避免脱离表格后仍挂在页面下
+        for btn in self._view_buttons.values():
+            btn.setParent(None)
+            btn.deleteLater()
+        self._view_buttons = {}
         self.course_label.setText("")
         
         # 显示空状态提示
-        self.empty_label.setText("请选择课程查看作业")
-        self.login_hint_btn.hide()
+        self.empty_container.set_message("请选择课程查看作业", show_action=False)
         self.table.hide()
         self.empty_container.show()
         

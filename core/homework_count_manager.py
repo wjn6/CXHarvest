@@ -56,6 +56,18 @@ class HomeworkCountManager(SessionManagerMixin):
         cache[course_id] = {'count': int(count), 'ts': time.time()}
         self.save_count_cache(cache)
 
+    def peek_cached_count(self, course_id) -> int:
+        """只读本地缓存的作业数量，不发网络请求；未命中或过期返回 0"""
+        if not course_id:
+            return 0
+        hit, count = self._read_cached_count(str(course_id))
+        return count if hit else 0
+
+    def remember_count(self, course_id, count: int):
+        """作业列表加载完成后回写真实数量，省掉一次只为计数的列表请求"""
+        if course_id:
+            self._write_cached_count(str(course_id), count)
+
     def get_homework_count_for_course(self, course_info: dict) -> int:
         """获取指定课程的作业数量（优先缓存）"""
         course_id = course_info.get('id')

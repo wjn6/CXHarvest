@@ -13,9 +13,11 @@ from PySide6.QtGui import QPixmap, QCursor, QTransform
 
 from qfluentwidgets import (
     BodyLabel, SmoothScrollArea,
-    InfoBar, InfoBarPosition, isDarkTheme, StrongBodyLabel
+    InfoBar, InfoBarPosition, StrongBodyLabel
 )
 from qfluentwidgets import FluentIcon as FIF
+
+from ui import palette
 
 
 class ClickableImageLabel(QLabel):
@@ -268,158 +270,48 @@ class ImagePreviewDialog(QDialog):
         layout.addWidget(sep)
     
     def _apply_style(self):
-        """应用Fluent风格样式 - 跟随系统主题"""
-        if isDarkTheme():
-            self.setStyleSheet("""
-                QDialog {
-                    background-color: #1a1a1a;
-                    border: 1px solid #333333;
-                }
-                #titleBar {
-                    background-color: #1f1f1f;
-                    border-bottom: 1px solid #333333;
-                }
-                #toolbar {
-                    background-color: #2d2d2d;
-                    border-bottom: 1px solid #3d3d3d;
-                }
-                #statusLabel {
-                    color: #e6e6e6;
-                    font-size: 12px;
-                }
-                #hintLabel, #sizeLabel {
-                    color: #aaaaaa;
-                    font-size: 12px;
-                }
-                #zoomLabel {
-                    color: #ffffff;
-                    font-size: 12px;
-                    background-color: rgba(255, 255, 255, 0.08);
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 6px;
-                }
-                #separator {
-                    background-color: #4d4d4d;
-                }
-                #imageScrollArea {
-                    border: none;
-                    background-color: #1a1a1a;
-                }
-                #imageContainer {
-                    background-color: #1a1a1a;
-                }
-                #imageLabel {
-                    background-color: transparent;
-                }
-                #hintBar {
-                    background-color: #252525;
-                    border-top: 1px solid #3d3d3d;
-                }
-                QToolButton {
-                    background-color: transparent;
-                    border: none;
-                    border-radius: 4px;
-                }
-                QToolButton:hover {
-                    background-color: rgba(255, 255, 255, 0.1);
-                }
-                QToolButton:pressed {
-                    background-color: rgba(255, 255, 255, 0.05);
-                }
-                QScrollBar:vertical, QScrollBar:horizontal {
-                    background-color: #2d2d2d;
-                    width: 10px;
-                    height: 10px;
-                }
-                QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-                    background-color: #5a5a5a;
-                    border-radius: 5px;
-                    min-height: 30px;
-                    min-width: 30px;
-                }
-                QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
-                    background-color: #6a6a6a;
-                }
-                QScrollBar::add-line, QScrollBar::sub-line {
-                    height: 0; width: 0;
-                }
-            """)
-        else:
-            self.setStyleSheet("""
-                QDialog {
-                    background-color: #f5f5f5;
-                    border: 1px solid #d9d9d9;
-                }
-                #titleBar {
-                    background-color: #f3f3f3;
-                    border-bottom: 1px solid #e0e0e0;
-                }
-                #toolbar {
-                    background-color: #ffffff;
-                    border-bottom: 1px solid #e0e0e0;
-                }
-                #statusLabel {
-                    color: #333333;
-                    font-size: 12px;
-                }
-                #hintLabel, #sizeLabel {
-                    color: #666666;
-                    font-size: 12px;
-                }
-                #zoomLabel {
-                    color: #333333;
-                    font-size: 12px;
-                    background-color: rgba(0, 0, 0, 0.04);
-                    border: 1px solid rgba(0, 0, 0, 0.08);
-                    border-radius: 6px;
-                }
-                #separator {
-                    background-color: #d0d0d0;
-                }
-                #imageScrollArea {
-                    border: none;
-                    background-color: #f5f5f5;
-                }
-                #imageContainer {
-                    background-color: #f5f5f5;
-                }
-                #imageLabel {
-                    background-color: transparent;
-                }
-                #hintBar {
-                    background-color: #fafafa;
-                    border-top: 1px solid #e0e0e0;
-                }
-                QToolButton {
-                    background-color: transparent;
-                    border: none;
-                    border-radius: 4px;
-                }
-                QToolButton:hover {
-                    background-color: rgba(0, 0, 0, 0.05);
-                }
-                QToolButton:pressed {
-                    background-color: rgba(0, 0, 0, 0.1);
-                }
-                QScrollBar:vertical, QScrollBar:horizontal {
-                    background-color: #f0f0f0;
-                    width: 10px;
-                    height: 10px;
-                }
-                QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-                    background-color: #c0c0c0;
-                    border-radius: 5px;
-                    min-height: 30px;
-                    min-width: 30px;
-                }
-                QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
-                    background-color: #a0a0a0;
-                }
-                QScrollBar::add-line, QScrollBar::sub-line {
-                    height: 0; width: 0;
-                }
-            """)
-    
+        """应用 Fluent 风格样式 - 色值统一取自 ui.palette"""
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {palette.color('surface')};
+                border: 1px solid {palette.color('card_border')};
+            }}
+            #titleBar {{
+                background-color: {palette.color('title_bar')};
+                border-bottom: 1px solid {palette.color('title_bar_border')};
+            }}
+            #toolbar {{
+                background-color: {palette.color('toolbar')};
+                border-bottom: 1px solid {palette.color('divider')};
+            }}
+            #statusLabel {{ color: {palette.color('text_primary')}; font-size: 12px; }}
+            #hintLabel, #sizeLabel {{ color: {palette.color('caption')}; font-size: 12px; }}
+            #zoomLabel {{
+                color: {palette.color('text_primary')};
+                font-size: 12px;
+                background-color: {palette.color('chip_bg')};
+                border: 1px solid {palette.color('chip_border')};
+                border-radius: 6px;
+            }}
+            #separator {{ background-color: {palette.color('divider_strong')}; }}
+            #imageScrollArea, #imageContainer {{
+                background-color: {palette.color('canvas')};
+                border: none;
+            }}
+            #imageLabel {{ background-color: transparent; }}
+            #hintBar {{
+                background-color: {palette.color('footer_bar')};
+                border-top: 1px solid {palette.color('divider')};
+            }}
+            QToolButton {{
+                background-color: transparent;
+                border: none;
+                border-radius: 4px;
+            }}
+            QToolButton:hover {{ background-color: {palette.color('hover_overlay')}; }}
+            QToolButton:pressed {{ background-color: {palette.color('press_overlay')}; }}
+            {palette.scroll_bar_qss(10)}
+        """)
     def _get_status_text(self):
         """获取状态文本"""
         if self.rotation_angle == 0:

@@ -45,6 +45,33 @@ class LogLevel(Enum):
     CRITICAL = logging.CRITICAL
 
 
+class _LossyStream:
+    """包装控制台流：GBK 终端遇到 ✓/⚠️ 这类字符时降级为替换符而不是丢整行日志"""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, message):
+        try:
+            return self._stream.write(message)
+        except UnicodeEncodeError:
+            encoding = getattr(self._stream, 'encoding', None) or 'utf-8'
+            safe = message.encode(encoding, 'replace').decode(encoding, 'replace')
+            return self._stream.write(safe)
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        try:
+            return self._stream.isatty()
+        except Exception:
+            return False
+
+
 class EnterpriseLogger:
     """企业级日志记录器
     
@@ -95,7 +122,7 @@ class EnterpriseLogger:
             return logger
             
         # 创建控制台处理器
-        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler = logging.StreamHandler(_LossyStream(sys.stdout))
         console_handler.setLevel(self.level.value)
         
         # 控制台格式化器（简洁版）

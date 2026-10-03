@@ -7,16 +7,12 @@
 import os
 import subprocess
 import platform
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFrame,
-    QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QFileDialog
-)
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QHeaderView
+from PySide6.QtCore import Qt
 
 from qfluentwidgets import (
-    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
-    PrimaryPushButton, PushButton, TransparentToolButton,
+    SubtitleLabel, TitleLabel, CaptionLabel,
+    PushButton, TransparentToolButton,
     InfoBar, InfoBarPosition, MessageBox,
     CardWidget, SearchLineEdit, TableWidget
 )
@@ -24,6 +20,12 @@ from qfluentwidgets import FluentIcon as FIF
 
 from core.enterprise_logger import app_logger
 from core.export_history import get_export_history_manager
+from ui import palette
+from ui.screen_metrics import apply_page_margins
+from ui.state_views import EmptyStateView
+from ui.table_utils import (KeyedItem, install_adaptive_width, polish_table,
+                            relocate_row_widgets,
+                            status_item as table_status_item)
 
 
 class ExportHistoryFluent(QWidget):
@@ -32,9 +34,17 @@ class ExportHistoryFluent(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.history_manager = get_export_history_manager()
+        # 行内按钮容器按记录 id 复用；列宽自适应器在 _create_table 里装好
+        self._row_actions = {}
+        self._title_col_adapter = None
         self._init_ui()
         self._load_history()
     
+    def resizeEvent(self, event):
+        """窄屏收紧左右留白，把宽度让给内容"""
+        super().resizeEvent(event)
+        apply_page_margins(self, 24, 24)
+
     def _init_ui(self):
         """初始化UI"""
         layout = QVBoxLayout(self)
@@ -146,48 +156,51 @@ class ExportHistoryFluent(QWidget):
     def _create_table(self, parent_layout):
         """创建历史列表表格"""
         self.table = TableWidget(self)
-        
+
         # 启用边框并设置圆角
         self.table.setBorderVisible(True)
         self.table.setBorderRadius(8)
-        self.table.setWordWrap(False)
-        
+
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels([
             "时间", "课程", "作业", "题目数", "格式", "状态", "操作"
         ])
-        
-        # 设置表格样式
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.verticalHeader().hide()
-        
-        # 设置列宽
+
+        # 列宽：短列定宽（ResizeToContents 会按最长文本撑到 280+，把操作列挤出视口），
+        # 课程列可拖，作业列宽时拉伸、窄屏保最小宽并交给横向滚动
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
         header.setSectionResizeMode(2, QHeaderView.Stretch)
         header.setSectionResizeMode(3, QHeaderView.Fixed)
-        header.setSectionResizeMode(4, QHeaderView.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.Interactive)
         header.setSectionResizeMode(5, QHeaderView.Fixed)
         header.setSectionResizeMode(6, QHeaderView.Fixed)
-        
-        self.table.setColumnWidth(0, 150)  # 时间
-        self.table.setColumnWidth(3, 80)   # 题目数
-        self.table.setColumnWidth(4, 80)   # 格式
-        self.table.setColumnWidth(5, 80)   # 状态
-        self.table.setColumnWidth(6, 140)  # 操作
-        
-        # 设置行高
-        self.table.verticalHeader().setDefaultSectionSize(50)
-        
+        header.setMinimumSectionSize(56)
+        self.table.setColumnWidth(0, 165)   # 时间
+        self.table.setColumnWidth(1, 200)   # 课程
+        self.table.setColumnWidth(3, 64)    # 题目数
+        self.table.setColumnWidth(4, 92)    # 格式
+        self.table.setColumnWidth(5, 64)    # 状态
+        self.table.setColumnWidth(6, 84)    # 操作
+        self._title_col_adapter = install_adaptive_width(self.table, 2, min_width=200)
+
+        polish_table(self.table, row_height=48)
+
+        # 排序：时间字典序即 chronologic，题目数/状态用显式排序键
+        self.table.setSortingEnabled(True)
+        header.setSortIndicatorShown(True)
+        header.setSortIndicator(0, Qt.DescendingOrder)
+        self.table.horizontalHeader().sortIndicatorChanged.connect(self._sync_row_widgets)
+
         parent_layout.addWidget(self.table, 1)
         
         # 空状态提示
-        self.empty_label = BodyLabel("暂无导出记录", self)
-        self.empty_label.setAlignment(Qt.AlignCenter)
-        self.empty_label.hide()
-        parent_layout.addWidget(self.empty_label)
+        self.empty_container = EmptyStateView("暂无导出记录", hint="导出题目后会在这里留痕",
+                                              icon=FIF.HISTORY, parent=self,
+                                              top_spacing=24)
+        self.empty_container.hide()
+        parent_layout.addWidget(self.empty_container, 1)
     
     def _load_history(self):
         """加载历史记录"""
@@ -208,86 +221,112 @@ class ExportHistoryFluent(QWidget):
     def _display_history(self, history: list):
         """显示历史记录"""
         self.table.setRowCount(0)
-        
+
         if not history:
+            self._release_action_widgets()
             self.table.hide()
-            self.empty_label.show()
+            self.empty_container.show()
             return
-        
-        self.empty_label.hide()
+
+        self.empty_container.hide()
         self.table.show()
+
+        # 排序开启时逐行插入会反复触发整表重排，填充期间先关掉
+        sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(history))
-        
+
         for row, record in enumerate(history):
-            # 时间
-            time_item = QTableWidgetItem(record.get("timestamp", ""))
+            # 时间（字典序即时间序）
+            time_item = KeyedItem(record.get("timestamp", ""))
             time_item.setData(Qt.UserRole, record)  # 保存完整记录
             self.table.setItem(row, 0, time_item)
-            
-            # 课程
-            course_item = QTableWidgetItem(record.get("course_name", ""))
+
+            course_item = KeyedItem(record.get("course_name", ""))
             self.table.setItem(row, 1, course_item)
-            
+
             # 作业
             homework_titles = record.get("homework_titles", [])
             if len(homework_titles) > 2:
                 homework_text = f"{homework_titles[0]} 等{len(homework_titles)}个"
             else:
                 homework_text = ", ".join(homework_titles)
-            homework_item = QTableWidgetItem(homework_text)
-            homework_item.setToolTip("\n".join(homework_titles))
+            homework_item = KeyedItem(
+                homework_text, tooltip="\n".join(homework_titles) or homework_text)
             self.table.setItem(row, 2, homework_item)
-            
-            # 题目数
-            question_item = QTableWidgetItem(str(record.get("question_count", 0)))
+
+            # 题目数：按数值排序，避免 "9" > "10"
+            count = int(record.get("question_count", 0) or 0)
+            question_item = KeyedItem(str(count), count)
             question_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 3, question_item)
-            
+
             # 格式
-            format_item = QTableWidgetItem(record.get("export_format", ""))
+            format_item = KeyedItem(record.get("export_format", ""))
             format_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 4, format_item)
-            
-            # 文件状态
-            file_exists = record.get("file_exists", False)
-            status_text = "存在" if file_exists else "已删除"
-            status_item = QTableWidgetItem(status_text)
-            status_item.setTextAlignment(Qt.AlignCenter)
-            if not file_exists:
-                status_item.setForeground(Qt.gray)
-            self.table.setItem(row, 5, status_item)
-            
+
+            # 文件状态：圆点色块，存在=绿 / 已删除=灰
+            file_exists = bool(record.get("file_exists", False))
+            status_cell = table_status_item("存在" if file_exists else "已删除",
+                                            0 if file_exists else 1,
+                                            'success' if file_exists else 'neutral')
+            self.table.setItem(row, 5, status_cell)
+
             # 操作按钮
-            btn_widget = QWidget()
-            btn_layout = QHBoxLayout(btn_widget)
+            self.table.setCellWidget(row, 6, self._action_widget(record))
+
+        self.table.setSortingEnabled(sorting)
+        self._sync_row_widgets()
+
+    def _make_tool_button(self, icon, tip: str) -> TransparentToolButton:
+        btn = TransparentToolButton(icon, self.table)
+        btn.setFixedSize(32, 32)
+        btn.setToolTip(tip)
+        palette.ensure_readable_font(btn, self)
+        return btn
+
+    def _action_widget(self, record: dict) -> QWidget:
+        """行内操作按钮：按记录 id 复用，排序/筛选只搬不重建"""
+        rid = record.get("id")
+        widget = self._row_actions.get(rid)
+        if widget is None:
+            widget = QWidget()
+            btn_layout = QHBoxLayout(widget)
             btn_layout.setContentsMargins(2, 2, 2, 2)
             btn_layout.setSpacing(4)
             btn_layout.setAlignment(Qt.AlignCenter)
-            
-            # 打开文件按钮 - 使用TransparentToolButton自动适配主题
-            open_btn = TransparentToolButton(FIF.FOLDER, btn_widget)
-            open_btn.setFixedSize(32, 32)
-            open_btn_font = open_btn.font()
-            if open_btn_font.pointSize() <= 0:
-                base_point_size = self.font().pointSize()
-                open_btn_font.setPointSize(base_point_size if base_point_size > 0 else 9)
-                open_btn.setFont(open_btn_font)
-            open_btn.setEnabled(file_exists)
+
+            open_btn = self._make_tool_button(FIF.FOLDER, "打开文件位置")
             open_btn.clicked.connect(lambda checked, r=record: self._open_file_location(r))
+            widget._open_btn = open_btn
             btn_layout.addWidget(open_btn)
-            
-            # 删除记录按钮
-            del_btn = TransparentToolButton(FIF.DELETE, btn_widget)
-            del_btn.setFixedSize(32, 32)
-            del_btn_font = del_btn.font()
-            if del_btn_font.pointSize() <= 0:
-                base_point_size = self.font().pointSize()
-                del_btn_font.setPointSize(base_point_size if base_point_size > 0 else 9)
-                del_btn.setFont(del_btn_font)
+
+            del_btn = self._make_tool_button(FIF.DELETE, "删除记录")
             del_btn.clicked.connect(lambda checked, r=record: self._delete_record(r))
             btn_layout.addWidget(del_btn)
-            
-            self.table.setCellWidget(row, 6, btn_widget)
+
+            self._row_actions[rid] = widget
+        widget._open_btn.setEnabled(bool(record.get("file_exists", False)))
+        return widget
+
+    def _sync_row_widgets(self, column=None, order=None):
+        """把操作按钮搬回其记录所在行，并回收当前不可见行的按钮"""
+        keys = []
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            record = item.data(Qt.UserRole) if item else None
+            if record:
+                keys.append(record.get("id"))
+        relocate_row_widgets(self.table, 6, self._row_actions, keys)
+        if self._title_col_adapter is not None:
+            self._title_col_adapter.maybe_apply()
+
+    def _release_action_widgets(self):
+        for widget in list(self._row_actions.values()):
+            widget.setParent(None)
+            widget.deleteLater()
+        self._row_actions = {}
     
     def _filter_history(self, text: str):
         """筛选历史记录"""

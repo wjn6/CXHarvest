@@ -25,6 +25,7 @@ from pathlib import Path
 from core.enterprise_logger import app_logger
 from core.version import __version__, APP_NAME
 from core.common import get_question_field
+from core.session_manager import thread_local_session
 
 def _escape_xml(text: str) -> str:
     """转义 XML/HTML 特殊字符（供 reportlab Paragraph 使用）"""
@@ -134,11 +135,13 @@ class QuestionExporter:
             # 统计分数
             score_str = get_question_field(q, 'score', '')
             if score_str:
-                try:
-                    score = float(re.sub(r'[^\d.]', '', str(score_str)))
-                    stats['total_score'] += score
-                except (ValueError, TypeError):
-                    pass
+                # 取首个数值即得分，避免 "85/100" 被拼成 85100
+                match = re.search(r'\d+(?:\.\d+)?', str(score_str))
+                if match:
+                    try:
+                        stats['total_score'] += float(match.group())
+                    except ValueError:
+                        pass
             
             # 统计题型
             q_type = get_question_field(q, 'question_type', '未知')
@@ -261,7 +264,8 @@ class QuestionExporter:
             if src and src.startswith('http'):
                 try:
                     if self._session:
-                        response = self._session.get(src, timeout=10)
+                        # 导出跑在工作线程，Session 取本线程副本
+                        response = thread_local_session(self._session).get(src, timeout=10)
                     else:
                         import requests
                         response = requests.get(src, timeout=10)

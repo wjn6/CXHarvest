@@ -12,6 +12,7 @@ import os
 import json
 import requests
 import base64
+import threading
 import time
 import re
 import uuid
@@ -507,15 +508,27 @@ class LoginManager:
             if hasattr(self, 'captcha_handler') and self.captcha_handler:
                 return self.captcha_handler(self.session, self.headers)
 
+            if threading.current_thread() is not threading.main_thread():
+                # 未注入回调时不在工作线程建对话框：Qt 要求 GUI 只在主线程操作
+                app_logger.error("当前不在主线程且未注入 captcha_handler，跳过图形验证码")
+                return ""
+
             # 检查是否在GUI环境中
             from PySide6.QtWidgets import QApplication, QDialog
             
             app = QApplication.instance()
             if app is not None:
-                # GUI模式 - 使用现代化验证码对话框
+                # GUI模式 - 使用现代化验证码对话框（MessageBoxBase 需要父窗口来定位遮罩）
+                parent = app.activeWindow()
+                if parent is None:
+                    visible = [w for w in app.topLevelWidgets() if w.isVisible()]
+                    parent = visible[0] if visible else None
+                if parent is None:
+                    app_logger.error("无可用父窗口，无法显示图形验证码")
+                    return ""
                 from ui.captcha_dialog import CaptchaDialog
                 
-                dialog = CaptchaDialog(self.session, self.headers)
+                dialog = CaptchaDialog(self.session, self.headers, parent)
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     return dialog.get_captcha_code()
                 else:

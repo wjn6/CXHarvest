@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from PIL import Image
 from ..enterprise_logger import app_logger
 from ..common import AppConstants
+from ..session_manager import thread_local_session
 
 ALLOWED_IMAGE_DOMAINS = {
     'chaoxing.com', 'ananas.chaoxing.com', 'p.ananas.chaoxing.com',
@@ -56,9 +57,13 @@ class ImageHandler:
             }
 
     def _get_session(self):
+        """返回当前线程的 Session 副本：本类的下载会被线程池并发调用"""
+        base = None
         if self.login_manager and hasattr(self.login_manager, 'session'):
-            return self.login_manager.session
-        return self._session
+            base = self.login_manager.session
+        elif self._session is not None:
+            base = self._session
+        return thread_local_session(base)
 
     def _is_allowed_domain(self, url: str) -> bool:
         """检查 URL 域名是否在白名单中"""

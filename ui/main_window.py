@@ -6,7 +6,7 @@
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QLabel
-from PySide6.QtCore import Qt, Signal, QTimer, QThread
+from PySide6.QtCore import Qt, Signal, QTimer, QThread, QSize
 from PySide6.QtGui import QFont, QKeySequence, QShortcut, QIcon
 
 from qfluentwidgets import (
@@ -99,9 +99,16 @@ class MainWindowFluent(FluentWindow):
     def _init_window(self):
         """初始化窗口属性"""
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
-        self.resize(1000, 700)  # 默认使用最小尺寸
-        self.setMinimumSize(1000, 700)
-        
+
+        # 默认 1000x700，但最小尺寸不得超过屏幕可用区，
+        # 否则 1366x768 或 125% 缩放下窗口比屏幕还高，底部内容无法够到
+        from ui.screen_metrics import min_window_size, fit_size
+        min_size = min_window_size(1000, 700)
+        self.setMinimumSize(min_size)
+        preferred = QSize(max(1000, min_size.width()), max(700, min_size.height()))
+        size = fit_size(preferred.width(), preferred.height())
+        self.resize(size)
+
         # 设置应用图标
         icon_path = PathManager.get_app_root() / APP_ICON
         if icon_path.exists():
@@ -110,7 +117,8 @@ class MainWindowFluent(FluentWindow):
         # 居中显示
         from PySide6.QtWidgets import QApplication
         screen = QApplication.primaryScreen().availableGeometry()
-        self.move((screen.width() - 1000) // 2, (screen.height() - 700) // 2)
+        self.move((screen.width() - size.width()) // 2,
+                  (screen.height() - size.height()) // 2)
     
     def _init_interfaces(self):
         """初始化各个页面"""
@@ -818,7 +826,9 @@ class UpdateInfoDialog(MessageBoxBase):
         changelog_text = TextEdit(self)
         changelog_text.setReadOnly(True)
         changelog_text.setMarkdown(update_info.get("changelog", "暂无更新说明"))
-        changelog_text.setMaximumHeight(150)
+        from ui.screen_metrics import available_size
+        # 更新日志按屏幕高度收高度，避免小屏上对话框本身超出屏幕
+        changelog_text.setMaximumHeight(min(150, max(80, available_size().height() // 4)))
         changelog_text.setStyleSheet("""
             TextEdit {
                 border: 1px solid #ddd;
@@ -1152,7 +1162,8 @@ class DownloadWorker(QThread):
                         os.remove(tmp_path)
                     except OSError:
                         pass
-                    self.download_finished.emit(False, "SHA256 校验文件获取失败，已中止下载以保障安全")
+                    self.download_finished.emit(
+                        False, "SHA256 校验文件获取失败，已中止下载以保障安全", "", "")
                     return
 
             os.replace(tmp_path, self.save_path)

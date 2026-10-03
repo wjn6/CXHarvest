@@ -23,7 +23,7 @@ from bs4 import BeautifulSoup
 # 项目内部导入
 # =============================================================================
 from .common import (
-    AppConstants, CourseInfo, NetworkError, ParseError,
+    AppConstants, LoginError,
     safe_json_load, safe_json_save, PathManager
 )
 from .login_manager import LoginManager
@@ -130,7 +130,6 @@ class CourseManager(SessionManagerMixin):
                 if '<title>用户登录</title>' in resp_text or 'passport2.chaoxing.com/login' in resp_text:
                     app_logger.warning("课程API返回了登录页面，session已失效")
                     self.invalidate_session()
-                    from .common import LoginError
                     raise LoginError("登录已过期，请重新登录")
                 
                 courses = self.parse_course_data(resp_text)
@@ -148,6 +147,9 @@ class CourseManager(SessionManagerMixin):
                 app_logger.error(error_msg, {"status_code": response.status_code})
                 raise Exception(error_msg)
                 
+        except LoginError:
+            # 登录态异常不回落缓存：stale 列表会顶掉"请重新登录"提示，后续请求只会静默返回空
+            raise
         except Exception as e:
             app_logger.error(f"获取课程列表失败: {e}")
             # 如果在线获取失败，尝试使用缓存

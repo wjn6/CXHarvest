@@ -5,43 +5,38 @@
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
-    QFrame, QSizePolicy, QSpacerItem, QLabel
+    QWidget, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy
 )
 from PySide6.QtCore import Qt, Signal, QThread
-from PySide6.QtGui import QFont, QPixmap, QCursor
+from PySide6.QtGui import QPixmap
 
 from qfluentwidgets import (
     CardWidget, SimpleCardWidget,
-    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
-    PrimaryPushButton, PushButton, TransparentPushButton, ToolButton,
-    SearchLineEdit, ComboBox, CheckBox, IndeterminateProgressBar,
-    InfoBar, InfoBarPosition, SmoothScrollArea, isDarkTheme
+    BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
+    PrimaryPushButton, PushButton, TransparentPushButton,
+    SearchLineEdit, ComboBox, CheckBox,
+    InfoBar, InfoBarPosition, SmoothScrollArea, isDarkTheme, FlowLayout
 )
 from qfluentwidgets import FluentIcon as FIF
 
 import re
 
-
-def _c(light: str, dark: str = "") -> str:
-    """根据当前主题返回颜色值"""
-    if not dark:
-        light_map = {
-            "#333": "#ddd", "#333333": "#dddddd",
-            "#555": "#bbb", "#555555": "#bbbbbb",
-            "#666": "#aaa", "#666666": "#aaaaaa",
-            "#888": "#999", "#888888": "#999999",
-            "#aaa": "#777", "#aaaaaa": "#777777",
-        }
-        dark = light_map.get(light, light)
-    return dark if isDarkTheme() else light
-
 from core.enterprise_logger import app_logger
 from core.homework_question_parser import HomeworkQuestionParser
 from core.common import get_question_field
+from ui import palette
 from ui.export_dialog import show_export_dialog
 from ui.image_preview import ImagePreviewDialog, ClickableImageLabel
+from ui.screen_metrics import apply_page_margins
+from ui.state_views import CollapsibleLabel, EmptyStateView, LoadingView
 from ui.worker_lifecycle import retire_worker
+
+
+def _c(light: str, dark: str = "") -> str:
+    """按当前主题取色；深浅对应关系统一维护在 ui.palette"""
+    if dark:
+        return dark if isDarkTheme() else light
+    return palette.text_color(light)
 
 
 class QuestionParseWorker(QThread):
@@ -107,7 +102,7 @@ class QuestionCard(CardWidget):
                 score_text = f"{score}分"
             if score_text:
                 score_label = CaptionLabel(score_text, self)
-                score_label.setStyleSheet("color: #e67e22; font-weight: 500;")
+                score_label.setStyleSheet(f"color: {palette.color('warning')}; font-weight: 500;")
                 top_layout.addWidget(score_label)
         
         # 正确/错误标记 - 仅对客观题显示
@@ -118,11 +113,11 @@ class QuestionCard(CardWidget):
         
         if is_objective and is_correct is True:
             status_label = CaptionLabel("✓ 正确", self)
-            status_label.setStyleSheet("color: #27ae60; font-weight: 500;")
+            status_label.setStyleSheet(f"color: {palette.color('success')}; font-weight: 500;")
             top_layout.addWidget(status_label)
         elif is_objective and is_correct is False:
             status_label = CaptionLabel("✗ 错误", self)
-            status_label.setStyleSheet("color: #e74c3c; font-weight: 500;")
+            status_label.setStyleSheet(f"color: {palette.color('danger')}; font-weight: 500;")
             top_layout.addWidget(status_label)
         
         top_layout.addStretch()
@@ -212,15 +207,13 @@ class QuestionCard(CardWidget):
         my_answer_container = QVBoxLayout()
         my_answer_header = QHBoxLayout()
         my_answer_title = CaptionLabel("我的答案:", self)
-        my_answer_title.setStyleSheet("color: #2980b9;")
+        my_answer_title.setStyleSheet(palette.text_style('accent'))
         my_answer_header.addWidget(my_answer_title)
         
-        # 有文本答案时显示文本，否则根据是否有图片决定显示内容
+        # 有文本答案时显示文本（过长可展开），否则根据是否有图片决定显示内容
         if clean_my_answer:
-            display_answer = clean_my_answer[:200] + '...' if len(clean_my_answer) > 200 else clean_my_answer
-            my_answer_text = BodyLabel(display_answer, self)
-            my_answer_text.setWordWrap(True)
-            my_answer_text.setStyleSheet(f"color: {_c('#333')};")
+            my_answer_text = CollapsibleLabel(clean_my_answer, self, limit=200,
+                                              color_token='text_primary')
             my_answer_header.addWidget(my_answer_text, 1)
         elif my_answer_images:
             # 只有图片，不显示文本
@@ -257,15 +250,13 @@ class QuestionCard(CardWidget):
         answer_container = QVBoxLayout()
         answer_header = QHBoxLayout()
         answer_title = CaptionLabel("正确答案:", self)
-        answer_title.setStyleSheet("color: #27ae60;")
+        answer_title.setStyleSheet(palette.text_style('success'))
         answer_header.addWidget(answer_title)
         
-        # 有文本答案时显示文本，否则根据是否有图片决定显示内容
+        # 有文本答案时显示文本（过长可展开），否则根据是否有图片决定显示内容
         if clean_answer:
-            display_correct = clean_answer[:200] + '...' if len(clean_answer) > 200 else clean_answer
-            answer_text = BodyLabel(display_correct, self)
-            answer_text.setStyleSheet(f"color: {_c('#333')};")
-            answer_text.setWordWrap(True)
+            answer_text = CollapsibleLabel(clean_answer, self, limit=200,
+                                           color_token='text_primary')
             answer_header.addWidget(answer_text, 1)
         elif answer_images:
             # 只有图片，不显示文本
@@ -294,12 +285,11 @@ class QuestionCard(CardWidget):
         analysis = get_question_field(self.question_data, 'explanation', '')
         if analysis:
             analysis_layout = QVBoxLayout()
+            analysis_layout.setSpacing(2)
             analysis_title = CaptionLabel("解析:", self)
-            analysis_title.setStyleSheet(f"color: {_c('#888888')};")
-            display_analysis = analysis[:300] + '...' if len(analysis) > 300 else analysis
-            analysis_text = CaptionLabel(display_analysis, self)
-            analysis_text.setWordWrap(True)
-            analysis_text.setStyleSheet(f"color: {_c('#888888')};")
+            analysis_title.setStyleSheet(palette.text_style('text_muted'))
+            analysis_text = CollapsibleLabel(analysis, self, limit=300,
+                                             color_token='text_muted')
             analysis_layout.addWidget(analysis_title)
             analysis_layout.addWidget(analysis_text)
             layout.addLayout(analysis_layout)
@@ -355,7 +345,9 @@ class QuestionCard(CardWidget):
             # 创建可点击的图片标签
             img_label = ClickableImageLabel(self)
             img_label.setPixmap(thumbnail_pixmap)
-            img_label.setStyleSheet("border: 1px solid #ddd; border-radius: 4px; padding: 2px;")
+            img_label.setStyleSheet(
+                f"border: 1px solid {palette.color('card_border')}; "
+                f"border-radius: 4px; padding: 2px;")
             img_label.setToolTip("点击查看大图")
             
             # 点击放大
@@ -393,6 +385,7 @@ class QuestionListFluent(QWidget):
         self.questions = []
         self.filtered_questions = []
         self.question_cards = []
+        self._selected_question_ids = set()
         self.current_homework = None
         self.login_manager = None
         self.parse_worker = None
@@ -401,6 +394,11 @@ class QuestionListFluent(QWidget):
         
         self._init_ui()
     
+    def resizeEvent(self, event):
+        """窄屏收紧左右留白，把宽度让给内容"""
+        super().resizeEvent(event)
+        apply_page_margins(self, 20, 20)
+
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 20, 36, 20)
@@ -547,85 +545,65 @@ class QuestionListFluent(QWidget):
         self.scroll_area.setWidget(self.content_widget)
         parent_layout.addWidget(self.scroll_area, 1)
         
-        # 加载状态容器（居中显示）
-        self.loading_container = QFrame(self)
-        self.loading_container.setStyleSheet("background: transparent;")
-        loading_layout = QVBoxLayout(self.loading_container)
-        loading_layout.setContentsMargins(0, 80, 0, 0)
-        loading_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        
-        # 使用进度条替代加载圈
-        self.loading_bar = IndeterminateProgressBar(self.loading_container)
-        self.loading_bar.setFixedWidth(200)
-        
-        self.loading_label = CaptionLabel("正在解析题目...", self.loading_container)
-        self.loading_label.setStyleSheet(f"color: {_c('#888888')};")
-        
-        loading_layout.addWidget(self.loading_bar, alignment=Qt.AlignCenter)
-        loading_layout.addSpacing(12)
-        loading_layout.addWidget(self.loading_label, alignment=Qt.AlignCenter)
-        loading_layout.addStretch()
-        
+        # 加载态（复用共享视图；loading_label 保留给进度文案）
+        self.loading_container = LoadingView("正在解析题目...", self)
+        self.loading_label = self.loading_container.label
         parent_layout.addWidget(self.loading_container, 1)
         self.loading_container.hide()
-        
-        # 空状态容器（居中显示）
-        self.empty_container = QFrame(self)
-        self.empty_container.setStyleSheet("background: transparent;")
-        empty_layout = QVBoxLayout(self.empty_container)
-        empty_layout.setContentsMargins(0, 80, 0, 0)
-        empty_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        
-        self.empty_label = BodyLabel("请选择作业解析题目", self.empty_container)
-        
-        self.login_hint_btn = PrimaryPushButton("点击登录", self.empty_container)
-        self.login_hint_btn.setFixedWidth(120)
-        self.login_hint_btn.clicked.connect(lambda: self.login_required.emit())
-        self.login_hint_btn.hide()  # 默认隐藏
-        
-        empty_layout.addWidget(self.empty_label, alignment=Qt.AlignCenter)
-        empty_layout.addSpacing(16)
-        empty_layout.addWidget(self.login_hint_btn, alignment=Qt.AlignCenter)
-        empty_layout.addStretch()
-        
+
+        # 空状态
+        self.empty_container = EmptyStateView("请选择作业解析题目",
+                                              icon=FIF.EDIT, action_text="点击登录",
+                                              parent=self)
+        self.empty_container.action_clicked.connect(lambda: self.login_required.emit())
         parent_layout.addWidget(self.empty_container, 1)
         self.empty_container.hide()
     
     def _create_footer(self, parent_layout):
         """创建底部操作栏"""
         footer_layout = QHBoxLayout()
-        
+        footer_layout.setSpacing(8)
+
+        # 左侧选择控件放进可换行容器：窄屏折行，而不是把右侧导出按钮挤出窗口
+        left_widget = QWidget(self)
+        left_widget.setMinimumWidth(160)
+        left_layout = FlowLayout(left_widget, needAni=False)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setHorizontalSpacing(12)
+        left_layout.setVerticalSpacing(4)
+        footer_layout.addWidget(left_widget, 1)
+
         # 全选操作
-        self.select_all_cb = CheckBox("全选", self)
+        self.select_all_cb = CheckBox("全选", left_widget)
         self.select_all_cb.stateChanged.connect(self._on_select_all)
-        footer_layout.addWidget(self.select_all_cb)
-        
+        left_layout.addWidget(self.select_all_cb)
+
         # 快速选择按钮
-        self.select_correct_btn = TransparentPushButton("选择正确题", self)
+        self.select_correct_btn = TransparentPushButton("选择正确题", left_widget)
         self.select_correct_btn.clicked.connect(self._select_correct)
-        footer_layout.addWidget(self.select_correct_btn)
-        
-        self.select_wrong_btn = TransparentPushButton("选择错误题", self)
+        left_layout.addWidget(self.select_correct_btn)
+
+        self.select_wrong_btn = TransparentPushButton("选择错误题", left_widget)
         self.select_wrong_btn.clicked.connect(self._select_wrong)
-        footer_layout.addWidget(self.select_wrong_btn)
-        
+        left_layout.addWidget(self.select_wrong_btn)
+
         # 已选数量
-        self.selected_label = CaptionLabel("已选择 0 题", self)
+        self.selected_label = CaptionLabel("已选择 0 题", left_widget)
         self.selected_label.setStyleSheet(f"color: {_c('#888888')};")
-        footer_layout.addWidget(self.selected_label)
-        
+        left_layout.addWidget(self.selected_label)
+
         footer_layout.addStretch()
-        
+
         # 导出按钮
         self.export_selected_btn = PushButton("导出选中", self)
         self.export_selected_btn.clicked.connect(self._on_export_selected)
         self.export_selected_btn.setEnabled(False)
         footer_layout.addWidget(self.export_selected_btn)
-        
+
         self.export_all_btn = PrimaryPushButton("导出全部", self)
         self.export_all_btn.clicked.connect(self._on_export_all)
         footer_layout.addWidget(self.export_all_btn)
-        
+
         parent_layout.addLayout(footer_layout)
     
     # ==================== 数据操作 ====================
@@ -661,8 +639,12 @@ class QuestionListFluent(QWidget):
     
     def _on_questions_loaded(self, questions: list):
         """题目加载完成"""
-        self.questions = questions
-        self.filtered_questions = questions.copy()
+        self.questions = questions or []
+        self.filtered_questions = self.questions.copy()
+        self._selected_question_ids.clear()
+        self.select_all_cb.blockSignals(True)
+        self.select_all_cb.setChecked(False)
+        self.select_all_cb.blockSignals(False)
         
         # 更新类型筛选选项
         self._update_type_filter()
@@ -670,6 +652,7 @@ class QuestionListFluent(QWidget):
         # 显示题目
         self._display_questions()
         self._update_stats()
+        self._update_selection_count()
         
         app_logger.info(f"解析了 {len(questions)} 道题目")
     
@@ -679,6 +662,19 @@ class QuestionListFluent(QWidget):
     
     def _on_parse_error(self, error_msg: str):
         """解析错误"""
+        self.questions = []
+        self.filtered_questions = []
+        self._selected_question_ids.clear()
+        self.select_all_cb.blockSignals(True)
+        self.select_all_cb.setChecked(False)
+        self.select_all_cb.blockSignals(False)
+        self._clear_content()
+        self._set_loading(False)
+        self.scroll_area.hide()
+        self.empty_container.set_message("解析失败，请重试", show_action=False)
+        self.empty_container.show()
+        self._update_stats()
+        self._update_selection_count()
         InfoBar.error(
             title="解析失败",
             content=error_msg,
@@ -704,6 +700,38 @@ class QuestionListFluent(QWidget):
         for t in sorted(types):
             self.type_combo.addItem(t)
     
+    @staticmethod
+    def _question_id(question: dict):
+        """返回题目的稳定选择标识。筛选只复用原题目字典，不依赖显示顺序。"""
+        return id(question)
+
+    @staticmethod
+    def _question_number(question: dict) -> int:
+        """读取解析器保存的原始题号，避免筛选后题号重新编号。"""
+        number = question.get('question_number', 0)
+        try:
+            return max(int(number) - 1, 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _on_card_selection_changed(self, question: dict, selected: bool):
+        """同步题目选择状态，避免筛选重建卡片后丢失选择。"""
+        question_id = self._question_id(question)
+        if selected:
+            self._selected_question_ids.add(question_id)
+        else:
+            self._selected_question_ids.discard(question_id)
+        self._update_selection_count()
+        self._update_select_all_state()
+
+    def _update_select_all_state(self):
+        """根据当前筛选结果同步全选框状态。"""
+        visible_ids = {self._question_id(q) for q in self.filtered_questions}
+        all_selected = bool(visible_ids) and visible_ids.issubset(self._selected_question_ids)
+        self.select_all_cb.blockSignals(True)
+        self.select_all_cb.setChecked(all_selected)
+        self.select_all_cb.blockSignals(False)
+
     def _display_questions(self):
         """显示题目列表"""
         # 清空现有卡片
@@ -714,11 +742,9 @@ class QuestionListFluent(QWidget):
             self.scroll_area.hide()
             # 根据登录状态显示不同提示
             if self.login_manager:
-                self.empty_label.setText("暂无题目数据")
-                self.login_hint_btn.hide()
+                self.empty_container.set_message("暂无题目数据", show_action=False)
             else:
-                self.empty_label.setText("暂无题目数据，请先登录")
-                self.login_hint_btn.show()
+                self.empty_container.set_message("暂无题目数据，请先登录", show_action=True)
             self.empty_container.show()
             return
         
@@ -736,8 +762,11 @@ class QuestionListFluent(QWidget):
                 section_card = self._create_section_header(current_section)
                 self.content_layout.addWidget(section_card)
             
-            card = QuestionCard(question, i, self.content_widget)
-            card.selection_changed.connect(self._update_selection_count)
+            card = QuestionCard(question, self._question_number(question), self.content_widget)
+            card.selection_changed.connect(
+                lambda selected, q=question: self._on_card_selection_changed(q, selected)
+            )
+            card.set_selected(self._question_id(question) in self._selected_question_ids)
             self.question_cards.append(card)
             self.content_layout.addWidget(card)
         
@@ -747,12 +776,12 @@ class QuestionListFluent(QWidget):
     def _create_section_header(self, section_title: str):
         """创建分组标题卡片 - 简洁风格"""
         header = QFrame(self.content_widget)
-        header.setStyleSheet("""
-            QFrame {
-                background: #16a085;
+        header.setStyleSheet(f"""
+            QFrame {{
+                background: {palette.color("accent")};
                 border-radius: 6px;
                 margin-top: 8px;
-            }
+            }}
         """)
         
         layout = QHBoxLayout(header)
@@ -818,27 +847,46 @@ class QuestionListFluent(QWidget):
     
     def _update_selection_count(self):
         """更新选中数量"""
-        count = sum(1 for card in self.question_cards if card.is_selected)
+        count = sum(
+            1 for question in self.questions
+            if self._question_id(question) in self._selected_question_ids
+        )
         self.selected_label.setText(f"已选择 {count} 题")
         self.export_selected_btn.setEnabled(count > 0)
-    
+
     def _on_select_all(self, state):
-        """全选"""
+        """全选当前筛选结果"""
         checked = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
+        visible_ids = {self._question_id(q) for q in self.filtered_questions}
+        if checked:
+            self._selected_question_ids.update(visible_ids)
+        else:
+            self._selected_question_ids.difference_update(visible_ids)
         for card in self.question_cards:
             card.set_selected(checked)
+        self._update_selection_count()
     
     def _select_correct(self):
         """选择正确题"""
-        for card in self.question_cards:
-            is_correct = get_question_field(card.question_data, 'is_correct', None)
-            card.set_selected(is_correct is True)
-    
+        self._select_by_status(True)
+
     def _select_wrong(self):
         """选择错误题"""
+        self._select_by_status(False)
+
+    def _select_by_status(self, expected: bool):
+        """按当前筛选结果选择题目，未知状态不参与。"""
+        visible_ids = {self._question_id(q) for q in self.filtered_questions}
+        matching_ids = {
+            self._question_id(q) for q in self.filtered_questions
+            if get_question_field(q, 'is_correct', None) is expected
+        }
+        self._selected_question_ids.difference_update(visible_ids)
+        self._selected_question_ids.update(matching_ids)
         for card in self.question_cards:
-            is_correct = get_question_field(card.question_data, 'is_correct', None)
-            card.set_selected(is_correct is False)
+            card.set_selected(self._question_id(card.question_data) in matching_ids)
+        self._update_selection_count()
+        self._update_select_all_state()
     
     def _run_export_dialog(self, questions, homework_title, course_name):
         """打开导出对话框（防重入）
@@ -852,13 +900,18 @@ class QuestionListFluent(QWidget):
             return False
         self._export_running = True
         try:
-            return show_export_dialog(questions, homework_title, course_name, self.window())
+            session = getattr(self.login_manager, 'session', None)
+            return show_export_dialog(questions, homework_title, course_name,
+                                      self.window(), session=session)
         finally:
             self._export_running = False
 
     def _on_export_selected(self):
         """导出选中题目"""
-        selected = [card.question_data for card in self.question_cards if card.is_selected]
+        selected = [
+            question for question in self.questions
+            if self._question_id(question) in self._selected_question_ids
+        ]
         if selected:
             homework_title = self.current_homework.get('title', '作业题目') if self.current_homework else '作业题目'
             course_name = self.current_homework.get('course_name', '') if self.current_homework else ''
@@ -892,13 +945,17 @@ class QuestionListFluent(QWidget):
         self.questions = []
         self.filtered_questions = []
         self.question_cards = []
+        self._selected_question_ids.clear()
+        self.select_all_cb.blockSignals(True)
+        self.select_all_cb.setChecked(False)
+        self.select_all_cb.blockSignals(False)
+        self._update_selection_count()
         self.current_homework = None
         self._clear_content()
         self.homework_label.setText("")
         
         # 显示空状态提示
-        self.empty_label.setText("请选择作业解析题目")
-        self.login_hint_btn.hide()
+        self.empty_container.set_message("请选择作业解析题目", show_action=False)
         self.scroll_area.hide()
         self.empty_container.show()
         

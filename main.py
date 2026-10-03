@@ -67,10 +67,13 @@ def main():
             sys.exit(1)
         
         from ui.main_window import MainWindowFluent
-        
-        # 设置主题
-        setTheme(Theme.LIGHT)  # 可选: Theme.DARK, Theme.AUTO
-        
+        from ui import palette
+
+        # 主题与字体在创建窗口前定好：先强设 LIGHT 再按配置覆盖会让首帧闪白
+        from core.config_manager import get_app_config
+        setTheme(Theme.DARK if get_app_config().ui.theme == "dark" else Theme.LIGHT)
+        app.setFont(palette.app_font())
+
         # 创建并显示主窗口
         window = MainWindowFluent()
         window.show()

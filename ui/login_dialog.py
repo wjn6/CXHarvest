@@ -58,6 +58,7 @@ class VerificationCodeWorker(QThread):
         self.login_manager = login_manager
         self.captcha_event = threading.Event()
         self.captcha_result = ""
+        self._stop = False
     
     def run(self):
         try:
@@ -65,18 +66,23 @@ class VerificationCodeWorker(QThread):
             self.login_manager.captcha_handler = self._handle_captcha_request
             
             result = self.login_manager.send_verification_code(self.phone)
+            if self._stop:
+                return
             if result:
                 self.send_success.emit()
             else:
                 self.send_error.emit("验证码发送失败，请稍后重试")
         except Exception as e:
-            self.send_error.emit(str(e))
+            if not self._stop:
+                self.send_error.emit(str(e))
         finally:
             # 清理回调，防止循环引用或误调用
             self.login_manager.captcha_handler = None
             
     def _handle_captcha_request(self, session, headers):
         """处理验证码请求（在工作线程中调用）"""
+        if self._stop:
+            return ""
         self.captcha_result = ""
         self.captcha_event.clear()
         
@@ -87,6 +93,11 @@ class VerificationCodeWorker(QThread):
         if not self.captcha_event.wait(timeout=120):
             return ""
         return self.captcha_result
+
+    def stop(self):
+        """协作停止：置位并唤醒正在等待用户输入验证码的分支"""
+        self._stop = True
+        self.captcha_event.set()
         
     def submit_captcha_result(self, code: str):
         """提交验证码结果（由主线程调用）"""
@@ -718,8 +729,8 @@ class LoginDialogFluent(MessageBoxBase):
         self.status_label.setText(message)
         self.status_label.setStyleSheet("color: #e74c3c;")
     
-    def reject(self):
-        """取消时安全退役登录线程（不阻塞 UI，防止运行中 QThread 被回收崩溃）"""
+    def _retire_workers(self):
+        """退役全部后台线程（不阻塞 UI，防止运行中 QThread 被回收崩溃）"""
         retire_worker(self.login_worker)
         self.login_worker = None
         retire_worker(getattr(self, 'code_worker', None))
@@ -728,8 +739,16 @@ class LoginDialogFluent(MessageBoxBase):
         for worker in list(getattr(self, '_pending_workers', [])):
             retire_worker(worker)
         self._pending_workers = []
-        
+
         if self.countdown_timer:
             self.countdown_timer.stop()
-        
+
+    def reject(self):
+        """取消时退役登录线程"""
+        self._retire_workers()
         super().reject()
+
+    def hideEvent(self, event):
+        """对话框消失（含登录成功 accept）时同样退役，避免线程随对话框回收"""
+        self._retire_workers()
+        super().hideEvent(event)

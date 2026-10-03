@@ -20,20 +20,21 @@ from qfluentwidgets import (
     CardWidget, BodyLabel, TitleLabel, CaptionLabel, StrongBodyLabel,
     PrimaryPushButton, PushButton, TransparentPushButton, TransparentToolButton,
     CheckBox, ProgressRing, InfoBar, InfoBarPosition, 
-    LineEdit, isDarkTheme
+    LineEdit, SmoothScrollArea
 )
 from qfluentwidgets import FluentIcon as FIF
 
 from core.enterprise_logger import app_logger
 from core.question_exporter import QuestionExporter, ExportOptions
 from core.export_history import get_export_history_manager
+from ui import palette
 from ui.worker_lifecycle import retire_worker
 
 
 class ExportWorker(QThread):
     """导出工作线程（支持取消 + .tmp 安全写入）"""
     progress = Signal(str, int)
-    finished = Signal(dict)
+    export_done = Signal(dict)      # 不覆盖 QThread.finished，否则 retire_worker 收不到线程结束
     cancelled = Signal(dict)   # 取消时发出，携带已完成部分
     error = Signal(str)
     
@@ -102,7 +103,7 @@ class ExportWorker(QThread):
                         app_logger.warning(f"导出 {fmt} 失败: {fmt_err}")
             
             self.progress.emit("导出完成", 100)
-            self.finished.emit(results)
+            self.export_done.emit(results)
             
         except Exception as e:
             self.error.emit(str(e))
@@ -112,16 +113,19 @@ class ExportDialog(QDialog):
     """导出对话框 - Fluent Design 风格"""
     
     def __init__(self, questions: List[Dict], homework_title: str = "作业题目", 
-                 course_name: str = "", parent=None):
+                 course_name: str = "", parent=None, session=None):
         super().__init__(parent)
         self.questions = questions
         self.homework_title = homework_title
         self.course_name = course_name
+        self.session = session          # 下载无 base64 缓存的图片时需要认证 cookie
         self.export_worker = None
         self._exported_files = []  # 保存导出的文件路径
         
         self.setWindowTitle("导出题目")
-        self.setFixedSize(800, 620)
+        # 尺寸受屏幕可用区约束，内容再超出就靠下方滚动区兜住
+        from ui.screen_metrics import fit_size
+        self.setFixedSize(fit_size(800, 620, min_w=520, min_h=420))
         self.setModal(True)
         
         # 设置无边框窗口 + 透明背景（实现圆角）
@@ -139,27 +143,8 @@ class ExportDialog(QDialog):
         self._load_default_path()
     
     def _apply_fluent_style(self):
-        """应用 Fluent Design 样式 - 跟随系统主题"""
-        if isDarkTheme():
-            self.setStyleSheet("""
-                QDialog { background-color: #2d2d2d; color: #ffffff; }
-                CardWidget {
-                    background-color: #383838;
-                    border: 1px solid #454545;
-                    border-radius: 8px;
-                }
-                QLabel { color: #ffffff; }
-            """)
-        else:
-            self.setStyleSheet("""
-                QDialog { background-color: #f5f5f5; color: #000000; }
-                CardWidget {
-                    background-color: #ffffff;
-                    border: 1px solid #e2e2e2;
-                    border-radius: 8px;
-                }
-                QLabel { color: #000000; }
-            """)
+        """应用 Fluent Design 样式 - 色值统一取自 ui.palette"""
+        self.setStyleSheet(palette.surface_qss('QDialog'))
     
     def _create_title_bar(self, parent_layout):
         """创建自定义标题栏"""
@@ -168,24 +153,7 @@ class ExportDialog(QDialog):
         title_bar.setObjectName("titleBar")
         
         # 标题栏样式（顶部圆角与窗口匹配）
-        if isDarkTheme():
-            title_bar.setStyleSheet("""
-                #titleBar {
-                    background-color: #1f1f1f;
-                    border-bottom: 1px solid #333333;
-                    border-top-left-radius: 12px;
-                    border-top-right-radius: 12px;
-                }
-            """)
-        else:
-            title_bar.setStyleSheet("""
-                #titleBar {
-                    background-color: #f0f0f0;
-                    border-bottom: 1px solid #e0e0e0;
-                    border-top-left-radius: 12px;
-                    border-top-right-radius: 12px;
-                }
-            """)
+        title_bar.setStyleSheet(palette.title_bar_qss('titleBar'))
         
         title_layout = QHBoxLayout(title_bar)
         title_layout.setContentsMargins(16, 0, 8, 0)
@@ -204,11 +172,7 @@ class ExportDialog(QDialog):
         # 关闭按钮
         close_btn = TransparentToolButton(FIF.CLOSE, title_bar)
         close_btn.setFixedSize(32, 32)
-        close_btn_font = close_btn.font()
-        if close_btn_font.pointSize() <= 0:
-            base_point_size = self.font().pointSize()
-            close_btn_font.setPointSize(base_point_size if base_point_size > 0 else 9)
-            close_btn.setFont(close_btn_font)
+        palette.ensure_readable_font(close_btn, self)
         close_btn.clicked.connect(self.reject)
         title_layout.addWidget(close_btn)
         
@@ -246,12 +210,8 @@ class ExportDialog(QDialog):
         path = QPainterPath()
         path.addRoundedRect(0.0, 0.0, self.width() - 2, self.height() - 2, 12, 12)
         
-        if isDarkTheme():
-            painter.fillPath(path, QColor("#2d2d2d"))
-            painter.setPen(QPen(QColor("#454545"), 1))
-        else:
-            painter.fillPath(path, QColor("#f5f5f5"))
-            painter.setPen(QPen(QColor("#d0d0d0"), 1))
+        painter.fillPath(path, QColor(palette.color('surface')))
+        painter.setPen(QPen(QColor(palette.color('card_border')), 1))
         painter.drawPath(path)
     
     def _init_ui(self):
@@ -262,8 +222,8 @@ class ExportDialog(QDialog):
         # 自定义标题栏
         self._create_title_bar(layout)
         
-        # 主内容区域（无滚动，单页紧凑排列）
-        content_widget = QWidget(self)
+        # 主内容区域（整体可滚动，小屏高度不足时不裁切控件）
+        content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(20, 12, 20, 16)
         content_layout.setSpacing(10)
@@ -299,11 +259,17 @@ class ExportDialog(QDialog):
         
         # 底部按钮
         button_layout = QHBoxLayout()
-        
+
         self.cancel_btn = PushButton("取消", self)
         self.cancel_btn.clicked.connect(self._on_cancel_clicked)
         button_layout.addWidget(self.cancel_btn)
-        
+
+        # 导出成功后再手动开目录，避免资源管理器被程序自动弹出来
+        self.open_dir_btn = PushButton("打开导出目录", self)
+        self.open_dir_btn.setEnabled(False)
+        self.open_dir_btn.clicked.connect(self._on_open_output_dir)
+        button_layout.addWidget(self.open_dir_btn)
+
         button_layout.addStretch()
         
         self.export_btn = PrimaryPushButton("开始导出", self)
@@ -312,7 +278,17 @@ class ExportDialog(QDialog):
         button_layout.addWidget(self.export_btn)
         
         content_layout.addLayout(button_layout)
-        layout.addWidget(content_widget)
+
+        self.body_scroll = SmoothScrollArea(self)
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setFrameShape(QFrame.NoFrame)
+        # 视口默认会用自己的 Base 底色填充，深色主题下会在底部透出一条浅色带
+        self.body_scroll.viewport().setAutoFillBackground(False)
+        self.body_scroll.setStyleSheet(
+            "SmoothScrollArea, SmoothScrollArea > QWidget > QWidget "
+            "{ background: transparent; border: none; }")
+        self.body_scroll.setWidget(content_widget)
+        layout.addWidget(self.body_scroll, 1)
     
     def _create_format_card(self, parent_layout):
         """创建格式选择卡片"""
@@ -527,7 +503,7 @@ class ExportDialog(QDialog):
         left_layout.addWidget(self.template_combo)
         
         tmpl_desc = CaptionLabel("", self.template_container)
-        tmpl_desc.setStyleSheet("color: #888;")
+        tmpl_desc.setStyleSheet(palette.text_style('text_muted'))
         self._template_desc_label = tmpl_desc
         left_layout.addWidget(tmpl_desc)
         left_layout.addStretch()
@@ -537,7 +513,9 @@ class ExportDialog(QDialog):
         # 右侧：SVG 预览
         self.template_preview = QLabel(self.template_container)
         self.template_preview.setFixedSize(160, 112)
-        self.template_preview.setStyleSheet("border: 1px solid #ddd; border-radius: 6px; background: #f9f9f9;")
+        self.template_preview.setStyleSheet(
+            f"border: 1px solid {palette.color('card_border')}; border-radius: 6px; "
+            f"background: {palette.color('card')};")
         self.template_preview.setScaledContents(True)
         tmpl_layout.addWidget(self.template_preview)
         
@@ -667,12 +645,13 @@ class ExportDialog(QDialog):
         os.makedirs(output_dir, exist_ok=True)
         
         # 构建导出器
-        exporter = QuestionExporter(self.questions, self.homework_title)
+        exporter = QuestionExporter(self.questions, self.homework_title, session=self.session)
         exporter.set_options(self._build_export_options())
         
         # 禁用导出按钮，取消按钮变为中断
         self.export_btn.setEnabled(False)
         self.cancel_btn.setText("中断导出")
+        self.open_dir_btn.setEnabled(False)
         self._exporting = True
         self.progress_container.show()
         
@@ -680,7 +659,7 @@ class ExportDialog(QDialog):
         html_template_id = self._get_selected_template_id() if 'html' in formats else 'default'
         self.export_worker = ExportWorker(exporter, output_dir, formats, base_name, html_template_id)
         self.export_worker.progress.connect(self._on_progress)
-        self.export_worker.finished.connect(self._on_export_finished)
+        self.export_worker.export_done.connect(self._on_export_finished)
         self.export_worker.cancelled.connect(self._on_export_cancelled)
         self.export_worker.error.connect(self._on_export_error)
         self.export_worker.start()
@@ -720,19 +699,15 @@ class ExportDialog(QDialog):
         if success_count == total_count and total_count > 0:
             InfoBar.success(
                 title="导出成功",
-                content=f"已成功导出 {success_count} 个文件到 {self.path_edit.text()}",
+                content=f"已导出 {success_count} 个文件到 {self.path_edit.text()}，"
+                        f"可点击「打开导出目录」",
                 orient=Qt.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP,
-                duration=5000,
+                duration=6000,
                 parent=self
             )
-            
-            # 打开输出目录
-            output_dir = self.path_edit.text()
-            self._open_directory(output_dir)
-            
-            self.accept()
+            self._after_export_succeeded()
         else:
             failed = [fmt for fmt, success in results.items() if not success]
             InfoBar.warning(
@@ -744,6 +719,18 @@ class ExportDialog(QDialog):
                 duration=5000,
                 parent=self
             )
+            if success_count > 0:
+                self._after_export_succeeded()
+
+    def _after_export_succeeded(self):
+        """有文件落盘后：给出显式的打开入口，并把“取消”改成“关闭”"""
+        self.open_dir_btn.setEnabled(True)
+        self.cancel_btn.setText("关闭")
+
+    def _on_open_output_dir(self):
+        output_dir = self.path_edit.text()
+        if output_dir and os.path.isdir(output_dir):
+            self._open_directory(output_dir)
     
     def _on_export_cancelled(self, results: dict):
         """导出被取消"""
@@ -758,7 +745,8 @@ class ExportDialog(QDialog):
         
         if success_count > 0:
             self._save_export_history(results)
-        
+            self._after_export_succeeded()
+
         InfoBar.warning(
             title="导出已取消",
             content=f"已取消，已完成 {success_count}/{total_formats} 个文件",
@@ -865,7 +853,7 @@ class ExportDialog(QDialog):
 
 
 def show_export_dialog(questions: List[Dict], homework_title: str = "作业题目", 
-                       course_name: str = "", parent=None) -> bool:
+                       course_name: str = "", parent=None, session=None) -> bool:
     """
     显示导出对话框
     
@@ -874,11 +862,12 @@ def show_export_dialog(questions: List[Dict], homework_title: str = "作业题�
         homework_title: 作业标题
         course_name: 课程名称
         parent: 父窗口
-        
+        session: 可选的已认证 requests.Session，用于导出时下载图片
+
     Returns:
         是否完成导出
     """
-    dialog = ExportDialog(questions, homework_title, course_name, parent)
+    dialog = ExportDialog(questions, homework_title, course_name, parent, session)
     return dialog.exec() == QDialog.Accepted
 
 

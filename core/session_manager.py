@@ -8,6 +8,7 @@
 # =============================================================================
 # 标准库导入
 # =============================================================================
+import threading
 from typing import Optional
 
 # =============================================================================
@@ -18,8 +19,42 @@ import requests
 # =============================================================================
 # 项目内部导入
 # =============================================================================
-from .common import AppConstants, NetworkError, LoginError
-from .enterprise_logger import app_logger, network_logger
+from .common import NetworkError, LoginError
+from .enterprise_logger import app_logger
+
+_tls = threading.local()
+
+
+def thread_local_session(base_session):
+    """返回基会话的线程本地副本（Session 的 headers/cookie jar 并非线程安全）
+
+    HTTPAdapter 按对象共享以保留连接复用与重试，可变的 cookie/headers 各自快照。
+    """
+    if base_session is None:
+        return None
+
+    cache = getattr(_tls, 'sessions', None)
+    if cache is None:
+        cache = _tls.sessions = {}
+
+    clone = cache.get(base_session)
+    if clone is not None:
+        return clone
+
+    clone = requests.Session()
+    clone.headers.update(dict(getattr(base_session, 'headers', None) or {}))
+    try:
+        clone.cookies.update(requests.utils.dict_from_cookiejar(base_session.cookies))
+    except Exception as e:
+        app_logger.warning("复制会话 cookie 失败", {"error": str(e)})
+    for prefix, adapter in dict(getattr(base_session, 'adapters', None) or {}).items():
+        clone.mount(prefix, adapter)
+    clone.verify = getattr(base_session, 'verify', True)
+    clone.proxies = dict(getattr(base_session, 'proxies', None) or {})
+    clone.trust_env = getattr(base_session, 'trust_env', True)
+    cache[base_session] = clone
+    return clone
+
 
 class SessionManagerMixin:
     """Session管理Mixin类，为其他管理器提供统一的session管理功能
@@ -81,8 +116,8 @@ class SessionManagerMixin:
         if not self.login_manager.check_login_status():
             raise LoginError("用户未登录，请先完成登录")
             
-        # 获取session
-        self._session = self.login_manager.get_session()
+        # 获取session（本线程独立副本，不与其它工作线程共用）
+        self._session = thread_local_session(self.login_manager.get_session())
         if not self._session:
             raise NetworkError("无法获取有效的网络会话")
             
@@ -145,65 +180,3 @@ class SessionManagerMixin:
         """刷新Session"""
         self.invalidate_session()
         return self.get_session()
-
-class SessionManager(SessionManagerMixin):
-    """独立的Session管理器类"""
-    
-    def __init__(self, login_manager=None):
-        super().__init__(login_manager)
-        self.headers = AppConstants.DEFAULT_HEADERS.copy()
-    
-    def make_request(self, method, url, **kwargs):
-        """发起网络请求的统一接口
-        
-        Args:
-            method (str): HTTP方法 (GET, POST等)
-            url (str): 请求URL
-            **kwargs: 其他请求参数
-            
-        Returns:
-            requests.Response: 响应对象
-            
-        Raises:
-            NetworkError: 网络请求失败
-        """
-        try:
-            session = self.get_session()
-            
-            # 合并headers
-            headers = self.headers.copy()
-            if 'headers' in kwargs:
-                headers.update(kwargs.pop('headers'))
-            kwargs['headers'] = headers
-            
-            # 设置超时
-            if 'timeout' not in kwargs:
-                kwargs['timeout'] = 30
-            
-            # 发起请求
-            response = session.request(method.upper(), url, **kwargs)
-            
-            # 记录网络请求
-            network_logger.network_request(method.upper(), url, response.status_code)
-            
-            # 检查响应状态
-            if response.status_code in [401, 403]:
-                # 认证失败，session可能已过期
-                self.invalidate_session()
-                app_logger.warning("身份验证失败，会话可能已过期",
-                                 {"status_code": response.status_code, "url": url})
-                raise LoginError(f"认证失败 (HTTP {response.status_code})，请重新登录")
-            
-            response.raise_for_status()
-            return response
-            
-        except requests.exceptions.RequestException as e:
-            raise NetworkError(f"网络请求失败: {e}")
-    
-    def get(self, url, **kwargs):
-        """GET请求"""
-        return self.make_request('GET', url, **kwargs)
-    
-    def post(self, url, **kwargs):
-        """POST请求"""
-        return self.make_request('POST', url, **kwargs)

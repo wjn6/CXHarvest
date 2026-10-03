@@ -5,7 +5,7 @@
 """
 
 from .common import (
-    AppConstants, CourseInfo, HomeworkInfo,
+    AppConstants,
     AppError, LoginError, NetworkError, ParseError,
     safe_json_load, safe_json_save, setup_session,
     sanitize_filename
@@ -19,7 +19,7 @@ from .export_history import ExportHistoryManager, get_export_history_manager
 from .enterprise_logger import app_logger
 
 __all__ = [
-    'AppConstants', 'CourseInfo', 'HomeworkInfo',
+    'AppConstants',
     'AppError', 'LoginError', 'NetworkError', 'ParseError',
     'safe_json_load', 'safe_json_save', 'setup_session',
     'sanitize_filename',

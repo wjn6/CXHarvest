@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 
 from ..enterprise_logger import app_logger
 from ..selectors import CHAOXING_SELECTORS
+from ..session_manager import thread_local_session
 
 from .image_handler import ImageHandler
 from .type_detector import TypeDetector
@@ -422,7 +423,7 @@ class HomeworkQuestionParser:
 
             # 获取作业页面内容
             if self.login_manager and hasattr(self.login_manager, 'session'):
-                session = self.login_manager.session
+                session = thread_local_session(self.login_manager.session)
                 response = session.get(homework_url, headers=self.headers, timeout=30)
                 response.raise_for_status()
                 

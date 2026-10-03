@@ -84,18 +84,19 @@ class HtmlTemplate:
         return content
 
     def _filter_js(self):
+        # 题型只从 data-type 读、按钮用 this 传入：HTML 转义后的 &#39; 会在属性解码阶段还原成单引号
         return '''<script>
 var _statusFilter='all',_typeFilter='all';
-function filterByStatus(type){
+function filterByStatus(type,el){
   _statusFilter=type;
   document.querySelectorAll('.filter-btn').forEach(function(b){b.classList.remove('active')});
-  event.target.classList.add('active');
+  if(el){el.classList.add('active');}
   applyFilters();
 }
-function filterByType(type){
-  _typeFilter=type;
+function filterByType(el){
+  _typeFilter=el.dataset.type||'all';
   document.querySelectorAll('.type-filter-btn').forEach(function(b){b.classList.remove('active')});
-  event.target.classList.add('active');
+  el.classList.add('active');
   applyFilters();
 }
 function applyFilters(){
@@ -117,10 +118,11 @@ function applyFilters(){
             types[t] = types.get(t, 0) + 1
         if len(types) <= 1:
             return ""
-        btns = '<button class="type-filter-btn active" onclick="filterByType(\'all\')">全部题型</button>'
+        btns = '<button class="type-filter-btn active" data-type="all" onclick="filterByType(this)">全部题型</button>'
         for t, cnt in types.items():
             safe_t = self._esc(t)
-            btns += f'<button class="type-filter-btn" onclick="filterByType(\'{safe_t}\')">{safe_t}({cnt})</button>'
+            btns += (f'<button class="type-filter-btn" data-type="{safe_t}" '
+                     f'onclick="filterByType(this)">{safe_t}({cnt})</button>')
         return f'<div class="type-filter-bar">{btns}</div>'
 
 
@@ -205,7 +207,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",
         out += '</div>'
         if o.include_statistics:
             out += f'<div class="stats-bar"><div class="stat-item"><div class="stat-value">{s["total_questions"]}</div><div class="stat-label">总题数</div></div><div class="stat-item correct"><div class="stat-value">{s["correct_count"]}</div><div class="stat-label">正确</div></div><div class="stat-item wrong"><div class="stat-value">{s["wrong_count"]}</div><div class="stat-label">错误</div></div><div class="stat-item"><div class="stat-value">{s["accuracy"]}</div><div class="stat-label">正确率</div></div></div>'
-        out += '<div class="filter-bar"><button class="filter-btn active" onclick="filterByStatus(\'all\')">全部</button><button class="filter-btn" onclick="filterByStatus(\'correct\')">答对</button><button class="filter-btn" onclick="filterByStatus(\'wrong\')">答错</button></div>'
+        out += '<div class="filter-bar"><button class="filter-btn active" onclick="filterByStatus(\'all\',this)">全部</button><button class="filter-btn" onclick="filterByStatus(\'correct\',this)">答对</button><button class="filter-btn" onclick="filterByStatus(\'wrong\',this)">答错</button></div>'
         out += self._build_type_filter_bar(exp.questions, exp)
         out += '<div class="content">'
 
@@ -215,7 +217,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",
             qt = exp._get_question_type(q)
             out += f'<div class="question-card" data-correct="{dc}" data-type="{h(qt)}"><div class="question-header">'
             if o.include_question_number: out += f'<span class="question-number">第 {i} 题</span>'
-            if o.include_question_type: out += f'<span class="question-type">{qt}</span>'
+            if o.include_question_type: out += f'<span class="question-type">{h(qt)}</span>'
             if o.show_correct_status and ic is not None:
                 out += f'<span class="question-status {"correct" if ic else "wrong"}">{"✓ 正确" if ic else "✗ 错误"}</span>'
             out += f'</div><div class="question-content">{h(exp._get_question_content(q))}</div>'
@@ -299,7 +301,7 @@ class ExamPaperTemplate(HtmlTemplate):
                 if sc: score = f'<span class="score-badge">{sc}分</span>'
 
             questions_html += f'''<div class="question-card" data-correct="{dc}" data-type="{h(qt)}">
-<div class="q-header"><span class="q-num">{i}</span><span class="q-type">({qt})</span>{score}{status}</div>
+<div class="q-header"><span class="q-num">{i}</span><span class="q-type">({h(qt)})</span>{score}{status}</div>
 <div class="q-body">{h(exp._get_question_content(q))}</div>
 {r(get_question_field(q, 'content_images', []))}
 {opts}
@@ -352,7 +354,7 @@ body{{font-family:"SimSun","Songti SC",serif;background:#fff;padding:0;color:#00
 <div class="info">{now}</div>
 </div>
 <table class="stats-table">{stats_row}</table>
-<div class="filter-bar"><button class="filter-btn active" onclick="filterByStatus('all')">全部</button><button class="filter-btn" onclick="filterByStatus('correct')">答对</button><button class="filter-btn" onclick="filterByStatus('wrong')">答错</button></div>
+<div class="filter-bar"><button class="filter-btn active" onclick="filterByStatus('all',this)">全部</button><button class="filter-btn" onclick="filterByStatus('correct',this)">答对</button><button class="filter-btn" onclick="filterByStatus('wrong',this)">答错</button></div>
 {self._build_type_filter_bar(exp.questions, exp)}
 {questions_html}
 <div class="paper-footer">Generated by {APP_NAME} v{__version__}</div>
@@ -477,7 +479,7 @@ body{{font-family:"Cascadia Code","Fira Code","JetBrains Mono","Consolas","Micro
 <div class="header-line">/// {h(exp.homework_title)}</div>
 <div class="time-line">// Generated at {now}</div>
 {stats_line}
-<div class="filter-bar"><button class="filter-btn active" onclick="filterByStatus('all')">ALL</button><button class="filter-btn" onclick="filterByStatus('correct')">PASS</button><button class="filter-btn" onclick="filterByStatus('wrong')">FAIL</button></div>
+<div class="filter-bar"><button class="filter-btn active" onclick="filterByStatus('all',this)">ALL</button><button class="filter-btn" onclick="filterByStatus('correct',this)">PASS</button><button class="filter-btn" onclick="filterByStatus('wrong',this)">FAIL</button></div>
 {self._build_type_filter_bar(exp.questions, exp)}
 {questions_html}
 <div class="footer">Generated by {APP_NAME} v{__version__}</div>
@@ -608,7 +610,7 @@ body{{font-family:"Microsoft YaHei","PingFang SC",-apple-system,sans-serif;backg
 <div class="main">
 <div class="cover"><h1>{h(exp.homework_title)}</h1><div class="meta">{datetime.now().strftime("%Y-%m-%d %H:%M")}</div></div>
 {stats_top}
-<div class="filter-bar"><button class="filter-btn active" onclick="filterByStatus('all')">全部</button><button class="filter-btn" onclick="filterByStatus('correct')">答对</button><button class="filter-btn" onclick="filterByStatus('wrong')">答错</button></div>
+<div class="filter-bar"><button class="filter-btn active" onclick="filterByStatus('all',this)">全部</button><button class="filter-btn" onclick="filterByStatus('correct',this)">答对</button><button class="filter-btn" onclick="filterByStatus('wrong',this)">答错</button></div>
 {self._build_type_filter_bar(exp.questions, exp)}
 {questions_html}
 <div class="footer">Generated by {APP_NAME} v{__version__}</div>
@@ -728,7 +730,7 @@ blockquote.analysis{{margin-top:8px;padding:8px 16px;border-left:3px solid #f0ef
 <h1>{h(exp.homework_title)}</h1>
 <div class="meta">{datetime.now().strftime("%Y-%m-%d %H:%M")}</div>
 {stats}
-<div class="filter-bar"><button class="filter-btn active" onclick="filterByStatus('all')">全部</button><button class="filter-btn" onclick="filterByStatus('correct')">正确</button><button class="filter-btn" onclick="filterByStatus('wrong')">错误</button></div>
+<div class="filter-bar"><button class="filter-btn active" onclick="filterByStatus('all',this)">全部</button><button class="filter-btn" onclick="filterByStatus('correct',this)">正确</button><button class="filter-btn" onclick="filterByStatus('wrong',this)">错误</button></div>
 {self._build_type_filter_bar(exp.questions, exp)}
 {questions_html}
 <div class="footer">Generated by {APP_NAME} v{__version__}</div>

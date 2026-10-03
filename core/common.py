@@ -8,10 +8,8 @@
 import os
 import sys
 import json
-import time
 import re
-from typing import Dict, List, Optional, Any, Union
-from dataclasses import dataclass
+from typing import Dict, Optional, Any
 from pathlib import Path
 
 # 导入统一版本号和应用名称
@@ -170,32 +168,6 @@ class AppConstants:
     COURSE_LIST_URL = "https://mooc2-ans.chaoxing.com/mooc2-ans/visit/courselistdata"
     HOMEWORK_LIST_BASE_URL = "https://mooc1.chaoxing.com/mooc2/work/list"
 
-@dataclass
-class CourseInfo:
-    """课程信息数据类"""
-    id: str
-    name: str
-    teacher: str
-    description: str = ""
-    link: str = ""
-    image: str = ""
-    progress: str = "0%"
-    homework_count: int = 0
-    status: str = "进行中"
-
-@dataclass
-class HomeworkInfo:
-    """作业信息数据类"""
-    id: str
-    title: str
-    url: str
-    status: str = "未知状态"
-    deadline: str = ""
-    score: str = ""
-    submit_status: str = ""
-    description: str = ""
-    course_name: str = ""
-
 
 # =============================================================================
 # 题目数据字段标准化
@@ -275,30 +247,6 @@ def safe_json_save(data: Any, file_path) -> bool:
         from .enterprise_logger import app_logger
         app_logger.error(f"保存JSON文件失败 {file_path}: {e}")
         return False
-
-def format_timestamp(timestamp: Optional[float] = None) -> str:
-    """格式化时间戳"""
-    if timestamp is None:
-        timestamp = time.time()
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
-
-def extract_course_id_from_url(url: str) -> Optional[str]:
-    """从URL中提取课程ID"""
-    try:
-        match = re.search(r'courseid=(\d+)', url)
-        return match.group(1) if match else None
-    except Exception:
-        return None
-
-def validate_phone_number(phone: str) -> bool:
-    """验证手机号格式"""
-    pattern = r'^1[3-9]\d{9}$'
-    return bool(re.match(pattern, phone))
-
-def validate_email(email: str) -> bool:
-    """验证邮箱格式"""
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return bool(re.match(pattern, email))
 
 def setup_session() -> requests.Session:
     """创建配置好的requests会话"""

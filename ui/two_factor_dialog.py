@@ -320,10 +320,18 @@ class ResetPasswordDialog(MessageBoxBase):
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color: {color};")
 
-    def reject(self):
+    def _retire_workers(self):
         retire_worker(self._worker)
         self._worker = None
+
+    def reject(self):
+        self._retire_workers()
         super().reject()
+
+    def hideEvent(self, event):
+        """改密成功 accept 后同样要退役，避免线程随对话框回收"""
+        self._retire_workers()
+        super().hideEvent(event)
 
 
 class TwoFactorDialog(MessageBoxBase):
@@ -467,11 +475,19 @@ class TwoFactorDialog(MessageBoxBase):
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color: {color};")
 
-    def reject(self):
+    def _retire_workers(self):
         retire_worker(self._send_worker)
         self._send_worker = None
         retire_worker(self._check_worker)
         self._check_worker = None
         if self._countdown_timer:
             self._countdown_timer.stop()
+
+    def reject(self):
+        self._retire_workers()
         super().reject()
+
+    def hideEvent(self, event):
+        """验证成功 accept 后同样要退役，避免线程随对话框回收"""
+        self._retire_workers()
+        super().hideEvent(event)

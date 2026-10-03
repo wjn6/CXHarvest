@@ -160,6 +160,42 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           & $iscc /DMyAppVersion="$env:APP_VERSION" /DMyAppSlug="CXHarvest" installer\setup.iss
 
+      - name: Sign Setup.exe (Authenticode, optional)
+        shell: pwsh
+        env:
+          SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+          SIGNING_TIMESTAMP_URL: ${{ secrets.SIGNING_TIMESTAMP_URL }}
+        run: |
+          # 未配置签名凭据时直接跳过，安装包保持 unsigned；配置好后无需改脚本即可生效。
+          # 放在计算 SHA256 之前，保证校验值对应签名后的文件。
+          if (-not $env:SIGNING_PFX_BASE64) {
+            Write-Host "::notice::未配置 SIGNING_PFX_BASE64，跳过代码签名"
+            exit 0
+          }
+          $signtool = (Get-Command signtool.exe -ErrorAction SilentlyContinue).Source
+          if (-not $signtool) {
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\**\signtool.exe" `
+              -ErrorAction SilentlyContinue | Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $signtool) { Write-Error "未找到 signtool.exe"; exit 1 }
+          $setup = Get-ChildItem installer\*.exe | Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $setup) { Write-Error "未找到待签名的安装包"; exit 1 }
+          $ts = if ($env:SIGNING_TIMESTAMP_URL) { $env:SIGNING_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
+          $pfx = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          try {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_BASE64))
+            & $signtool sign /fd SHA256 /tr $ts /td SHA256 /p $env:SIGNING_PFX_PASSWORD /f $pfx $setup.FullName
+            if ($LASTEXITCODE -ne 0) { Write-Error "signtool 签名失败"; exit 1 }
+            & $signtool verify /pa /q $setup.FullName
+            if ($LASTEXITCODE -ne 0) { Write-Error "签名自校验失败"; exit 1 }
+            Write-Host "已签名: $($setup.Name)"
+          } finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Collect setup artifact metadata
         shell: pwsh
         run: |
