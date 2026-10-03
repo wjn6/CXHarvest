@@ -9,6 +9,7 @@
 # 标准库导入
 # =============================================================================
 import json
+import hashlib
 import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -63,19 +64,40 @@ class CourseManager(SessionManagerMixin):
         # 使用 PathManager 获取课程缓存文件路径（放在 cache 目录）
         self.courses_file = PathManager.get_file_path("courses.json", "cache")
         
-    def load_courses_from_cache(self) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _account_cache_key(session) -> Optional[str]:
+        """只用当前会话的用户 ID 生成缓存标识；没有 ID 时禁用缓存。"""
+        identifiers = sorted({
+            f"{cookie.name}={cookie.value}"
+            for cookie in session.cookies
+            if cookie.name in ('_uid', 'UID') and cookie.value
+        })
+        if not identifiers:
+            return None
+        return hashlib.sha256('|'.join(identifiers).encode('utf-8')).hexdigest()
+
+    def load_courses_from_cache(self, account_key: Optional[str] = None) -> List[Dict[str, Any]]:
         """从缓存文件加载课程列表
         
         Returns:
             课程列表数据
         """
-        courses = safe_json_load(self.courses_file, [])
+        if account_key is None:
+            account_key = self._account_cache_key(self.get_session())
+        if not account_key:
+            return []
+        cached = safe_json_load(self.courses_file, {})
+        if not isinstance(cached, dict) or cached.get('account_key') != account_key:
+            return []
+        courses = cached.get('courses')
+        if not isinstance(courses, list) or not all(isinstance(course, dict) for course in courses):
+            return []
         if courses:
             file_logger.file_operation("加载", self.courses_file, 
                                      {"courses_count": len(courses)})
         return courses
     
-    def save_courses_to_cache(self, courses: List[Dict[str, Any]]) -> bool:
+    def save_courses_to_cache(self, courses: List[Dict[str, Any]], account_key: Optional[str] = None) -> bool:
         """保存课程列表到缓存文件
         
         Args:
@@ -84,7 +106,13 @@ class CourseManager(SessionManagerMixin):
         Returns:
             是否保存成功
         """
-        success = safe_json_save(courses, self.courses_file)
+        if account_key is None:
+            account_key = self._account_cache_key(self.get_session())
+        if not account_key:
+            return False
+        success = safe_json_save(
+            {'account_key': account_key, 'courses': courses}, self.courses_file
+        )
         if success:
             file_logger.file_operation("保存", self.courses_file,
                                      {"courses_count": len(courses)})
@@ -95,15 +123,16 @@ class CourseManager(SessionManagerMixin):
 
     def get_course_list(self, use_cache: bool = True) -> List[Dict[str, Any]]:
         """获取课程列表"""
+        account_key = None
         try:
+            session = self.get_session()
+            account_key = self._account_cache_key(session)
             # 如果允许使用缓存，先尝试从缓存加载
             if use_cache:
-                cached_courses = self.load_courses_from_cache()
+                cached_courses = self.load_courses_from_cache(account_key)
                 if cached_courses:
                     self.courses = cached_courses
                     return cached_courses
-            
-            session = self.get_session()
             
             # 直接调用课程数据API
             api_url = AppConstants.COURSE_LIST_URL
@@ -121,7 +150,7 @@ class CourseManager(SessionManagerMixin):
             headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
             headers['X-Requested-With'] = 'XMLHttpRequest'
 
-            response = session.post(api_url, data=data, headers=headers)
+            response = session.post(api_url, data=data, headers=headers, timeout=30)
             network_logger.network_request("POST", api_url, response.status_code)
 
             if response.status_code == 200:
@@ -137,7 +166,7 @@ class CourseManager(SessionManagerMixin):
                 
                 # 仅在成功获取到课程时保存缓存
                 if courses:
-                    self.save_courses_to_cache(courses)
+                    self.save_courses_to_cache(courses, account_key)
                 
                 app_logger.success("成功获取课程数据", 
                                  {"course_count": len(courses)})
@@ -153,8 +182,8 @@ class CourseManager(SessionManagerMixin):
         except Exception as e:
             app_logger.error(f"获取课程列表失败: {e}")
             # 如果在线获取失败，尝试使用缓存
-            if not use_cache:
-                cached_courses = self.load_courses_from_cache()
+            if not use_cache and account_key and not isinstance(e, LoginError):
+                cached_courses = self.load_courses_from_cache(account_key)
                 if cached_courses:
                     app_logger.info("使用缓存的课程数据")
                     self.courses = cached_courses

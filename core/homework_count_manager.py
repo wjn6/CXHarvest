@@ -30,7 +30,8 @@ class HomeworkCountManager(SessionManagerMixin):
         self.count_cache_file = str(PathManager.get_file_path("homework_counts.json", "cache"))
 
     def load_count_cache(self):
-        return safe_json_load(self.count_cache_file, {})
+        cache = safe_json_load(self.count_cache_file, {})
+        return cache if isinstance(cache, dict) else {}
 
     def save_count_cache(self, cache):
         safe_json_save(cache, self.count_cache_file)
@@ -45,10 +46,14 @@ class HomeworkCountManager(SessionManagerMixin):
         if not isinstance(entry, dict):
             return False, 0
         import time
-        age = time.time() - float(entry.get('ts', 0))
+        try:
+            age = time.time() - float(entry.get('ts', 0))
+            count = max(0, int(entry.get('count', 0)))
+        except (TypeError, ValueError):
+            return False, 0
         if age < 0 or age > self.CACHE_TTL:
             return False, 0
-        return True, int(entry.get('count', 0))
+        return True, count
 
     def _write_cached_count(self, course_id: str, count: int):
         import time

@@ -7,7 +7,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Qt, Signal, QThread, QTimer
 from PySide6.QtGui import QPixmap
 
 from qfluentwidgets import (
@@ -86,7 +86,7 @@ class QuestionCard(CardWidget):
         top_layout = QHBoxLayout()
         
         # 序号和类型组合
-        q_type = get_question_field(self.question_data, 'question_type', '未知')
+        q_type = str(get_question_field(self.question_data, 'question_type', '未知') or '未知')
         self.index_label = CaptionLabel(f"第 {self.index + 1} 题 · {q_type}", self)
         self.index_label.setStyleSheet(f"color: {_c('#666666')};")
         top_layout.addWidget(self.index_label)
@@ -130,19 +130,16 @@ class QuestionCard(CardWidget):
         layout.addLayout(top_layout)
         
         # 题目内容（保留换行）
-        content = get_question_field(self.question_data, 'content', '')
+        content = str(get_question_field(self.question_data, 'content', '') or '')
         # 清理图片占位符
         if content:
             content = re.sub(r'\[图片[^\]]*\]\s*', '', content).strip()
         self.content_label = BodyLabel(self)
         self.content_label.setWordWrap(True)
         self.content_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        # 将换行符转换为HTML换行以正确显示
-        if '\n' in content:
-            html_content = content.replace('\n', '<br>')
-            self.content_label.setText(html_content)
-        else:
-            self.content_label.setText(content)
+        # 远端题目内容必须按纯文本显示，避免 ``<...>`` 被 Qt 当作富文本解释。
+        self.content_label.setTextFormat(Qt.PlainText)
+        self.content_label.setText(str(content or ''))
         layout.addWidget(self.content_label)
         
         # 题目中的图片
@@ -179,6 +176,7 @@ class QuestionCard(CardWidget):
                 text = re.sub(r'\[图片[^\]]*\]\s*', '', text).strip()
                 
                 opt_label = BodyLabel(text, self)
+                opt_label.setTextFormat(Qt.PlainText)
                 opt_label.setWordWrap(True)
                 opt_label.setStyleSheet(f"color: {_c('#555555')}; padding-left: 16px;")
                 options_layout.addWidget(opt_label)
@@ -196,7 +194,7 @@ class QuestionCard(CardWidget):
             layout.addLayout(options_layout)
         
         # 我的答案
-        my_answer = get_question_field(self.question_data, 'my_answer', '')
+        my_answer = str(get_question_field(self.question_data, 'my_answer', '') or '')
         my_answer_images = get_question_field(self.question_data, 'my_answer_images', [])
         
         # 清理答案文本中的图片占位符
@@ -239,7 +237,7 @@ class QuestionCard(CardWidget):
         layout.addLayout(my_answer_container)
         
         # 正确答案
-        answer = get_question_field(self.question_data, 'correct_answer', '')
+        answer = str(get_question_field(self.question_data, 'correct_answer', '') or '')
         answer_images = get_question_field(self.question_data, 'correct_answer_images', [])
         
         # 清理答案文本中的图片占位符
@@ -282,7 +280,7 @@ class QuestionCard(CardWidget):
         layout.addLayout(answer_container)
         
         # 解析（如果有）
-        analysis = get_question_field(self.question_data, 'explanation', '')
+        analysis = str(get_question_field(self.question_data, 'explanation', '') or '')
         if analysis:
             analysis_layout = QVBoxLayout()
             analysis_layout.setSpacing(2)
@@ -326,7 +324,10 @@ class QuestionCard(CardWidget):
                 # 格式: data:image/png;base64,xxxxx
                 try:
                     header, encoded = data.split(',', 1)
-                    image_data = base64.b64decode(encoded)
+                    # 防止异常页面把超大 Base64 塞进 UI，造成瞬时内存峰值。
+                    if len(encoded) > 20 * 1024 * 1024:
+                        return None
+                    image_data = base64.b64decode(encoded, validate=True)
                 except Exception:
                     return None
             else:
@@ -386,6 +387,7 @@ class QuestionListFluent(QWidget):
         self.filtered_questions = []
         self.question_cards = []
         self._selected_question_ids = set()
+        self._question_order = {}
         self.current_homework = None
         self.login_manager = None
         self.parse_worker = None
@@ -506,7 +508,11 @@ class QuestionListFluent(QWidget):
         self.search_edit = SearchLineEdit(self)
         self.search_edit.setPlaceholderText("搜索题目内容...")
         self.search_edit.setFixedWidth(250)
-        self.search_edit.textChanged.connect(self._filter_questions)
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(250)
+        self._filter_timer.timeout.connect(self._filter_questions)
+        self.search_edit.textChanged.connect(self._schedule_filter)
         toolbar_layout.addWidget(self.search_edit)
         
         # 类型筛选
@@ -612,7 +618,27 @@ class QuestionListFluent(QWidget):
         """加载题目列表"""
         # 清理之前的线程
         self._cleanup_worker()
-        
+        self._filter_timer.stop()
+
+        switching = self._homework_key(self.current_homework) != self._homework_key(homework_info)
+        if switching:
+            self.questions = []
+            self.filtered_questions = []
+            self._selected_question_ids.clear()
+            self._question_order = {}
+            self._clear_content()
+            self.scroll_area.hide()
+            self.empty_container.set_message("正在解析题目...", show_action=False)
+            self.empty_container.show()
+            self.search_edit.blockSignals(True)
+            self.status_combo.blockSignals(True)
+            self.search_edit.clear()
+            self.status_combo.setCurrentIndex(0)
+            self.search_edit.blockSignals(False)
+            self.status_combo.blockSignals(False)
+            self._update_stats()
+            self._update_selection_count()
+
         self.current_homework = homework_info
         self.login_manager = login_manager
         
@@ -628,9 +654,22 @@ class QuestionListFluent(QWidget):
         self.parse_worker.questions_loaded.connect(self._on_questions_loaded)
         self.parse_worker.progress_update.connect(self._on_progress_update)
         self.parse_worker.error_occurred.connect(self._on_parse_error)
-        self.parse_worker.finished.connect(lambda: self._set_loading(False))
-        self.parse_worker.finished.connect(self._cleanup_worker)
+        self.parse_worker.finished.connect(self._on_parse_finished)
         self.parse_worker.start()
+
+    @staticmethod
+    def _homework_key(homework_info: dict) -> str:
+        if not homework_info:
+            return ""
+        return str(homework_info.get('url') or homework_info.get('id') or homework_info.get('title') or '')
+
+    def _on_parse_finished(self):
+        worker = self.sender()
+        if self.parse_worker is worker:
+            self.parse_worker = None
+            self._set_loading(False)
+        if worker is not None:
+            worker.deleteLater()
     
     def _cleanup_worker(self):
         """清理工作线程（安全退役，不阻塞 UI，防止运行中 QThread 被回收崩溃）"""
@@ -639,9 +678,12 @@ class QuestionListFluent(QWidget):
     
     def _on_questions_loaded(self, questions: list):
         """题目加载完成"""
+        if self.sender() is not None and self.sender() is not self.parse_worker:
+            return
         self.questions = questions or []
         self.filtered_questions = self.questions.copy()
         self._selected_question_ids.clear()
+        self._question_order = {id(question): index for index, question in enumerate(self.questions)}
         self.select_all_cb.blockSignals(True)
         self.select_all_cb.setChecked(False)
         self.select_all_cb.blockSignals(False)
@@ -649,8 +691,8 @@ class QuestionListFluent(QWidget):
         # 更新类型筛选选项
         self._update_type_filter()
         
-        # 显示题目
-        self._display_questions()
+        # 应用当前筛选条件并显示题目
+        self._filter_questions()
         self._update_stats()
         self._update_selection_count()
         
@@ -662,9 +704,13 @@ class QuestionListFluent(QWidget):
     
     def _on_parse_error(self, error_msg: str):
         """解析错误"""
+        if self.sender() is not None and self.sender() is not self.parse_worker:
+            return
         self.questions = []
         self.filtered_questions = []
+        self.question_cards = []
         self._selected_question_ids.clear()
+        self._question_order = {}
         self.select_all_cb.blockSignals(True)
         self.select_all_cb.setChecked(False)
         self.select_all_cb.blockSignals(False)
@@ -675,8 +721,12 @@ class QuestionListFluent(QWidget):
         self.empty_container.show()
         self._update_stats()
         self._update_selection_count()
+        expired = '登录' in error_msg and any(k in error_msg for k in ('过期', '失效', '未登录'))
+        self.empty_container.set_message(
+            "登录已失效，请重新登录" if expired else "题目解析失败，请重试",
+            show_action=expired)
         InfoBar.error(
-            title="解析失败",
+            title="登录已失效" if expired else "解析失败",
             content=error_msg,
             orient=Qt.Horizontal,
             isClosable=True,
@@ -684,6 +734,8 @@ class QuestionListFluent(QWidget):
             duration=5000,
             parent=self.window()
         )
+        if expired:
+            self.login_required.emit()
         app_logger.error(f"题目解析失败: {error_msg}")
     
     def _update_type_filter(self):
@@ -691,14 +743,18 @@ class QuestionListFluent(QWidget):
         # 收集所有题目类型
         types = set()
         for q in self.questions:
-            q_type = get_question_field(q, 'question_type', '未知')
+            q_type = str(get_question_field(q, 'question_type', '未知') or '未知')
             types.add(q_type)
         
         # 更新下拉框
-        self.type_combo.clear()
-        self.type_combo.addItem("全部类型")
-        for t in sorted(types):
-            self.type_combo.addItem(t)
+        self.type_combo.blockSignals(True)
+        try:
+            self.type_combo.clear()
+            self.type_combo.addItem("全部类型")
+            for t in sorted(types):
+                self.type_combo.addItem(t)
+        finally:
+            self.type_combo.blockSignals(False)
     
     @staticmethod
     def _question_id(question: dict):
@@ -746,6 +802,10 @@ class QuestionListFluent(QWidget):
             else:
                 self.empty_container.set_message("暂无题目数据，请先登录", show_action=True)
             self.empty_container.show()
+            self.select_all_cb.blockSignals(True)
+            self.select_all_cb.setChecked(False)
+            self.select_all_cb.blockSignals(False)
+            self._update_selection_count()
             return
         
         self.empty_container.hide()
@@ -753,16 +813,18 @@ class QuestionListFluent(QWidget):
         
         # 按分组显示题目
         current_section = None
-        for i, question in enumerate(self.filtered_questions):
+        for question in self.filtered_questions:
             # 检查是否需要添加分组标题
-            question_section = question.get('section', '')
+            question_section = str(question.get('section') or '')
             if question_section and question_section != current_section:
                 current_section = question_section
                 # 创建分组标题卡片
                 section_card = self._create_section_header(current_section)
                 self.content_layout.addWidget(section_card)
             
-            card = QuestionCard(question, self._question_number(question), self.content_widget)
+            number = (self._question_number(question) if question.get('question_number')
+                      else self._question_order.get(id(question), 0))
+            card = QuestionCard(question, number, self.content_widget)
             card.selection_changed.connect(
                 lambda selected, q=question: self._on_card_selection_changed(q, selected)
             )
@@ -772,6 +834,8 @@ class QuestionListFluent(QWidget):
         
         # 添加底部占位
         self.content_layout.addStretch()
+        self._update_select_all_state()
+        self._update_selection_count()
     
     def _create_section_header(self, section_title: str):
         """创建分组标题卡片 - 简洁风格"""
@@ -788,7 +852,8 @@ class QuestionListFluent(QWidget):
         layout.setContentsMargins(16, 8, 16, 8)
         
         # 分组标题
-        title_label = SubtitleLabel(section_title, header)
+        title_label = SubtitleLabel(str(section_title), header)
+        title_label.setTextFormat(Qt.PlainText)
         title_label.setStyleSheet("color: white; font-weight: 500;")
         layout.addWidget(title_label)
         
@@ -803,6 +868,9 @@ class QuestionListFluent(QWidget):
             if item.widget():
                 item.widget().deleteLater()
     
+    def _schedule_filter(self):
+        self._filter_timer.start()
+
     def _filter_questions(self):
         """筛选题目"""
         keyword = self.search_edit.text().strip().lower()
@@ -812,12 +880,12 @@ class QuestionListFluent(QWidget):
         self.filtered_questions = []
         for q in self.questions:
             # 关键词匹配
-            content = get_question_field(q, 'content', '').lower()
+            content = str(get_question_field(q, 'content', '') or '').lower()
             if keyword and keyword not in content:
                 continue
             
             # 类型匹配
-            q_type = get_question_field(q, 'question_type', '未知')
+            q_type = str(get_question_field(q, 'question_type', '未知') or '未知')
             if type_filter != "全部类型" and q_type != type_filter:
                 continue
             
@@ -853,7 +921,6 @@ class QuestionListFluent(QWidget):
         )
         self.selected_label.setText(f"已选择 {count} 题")
         self.export_selected_btn.setEnabled(count > 0)
-
     def _on_select_all(self, state):
         """全选当前筛选结果"""
         checked = (state == Qt.CheckState.Checked.value or state == Qt.CheckState.Checked)
@@ -908,6 +975,8 @@ class QuestionListFluent(QWidget):
 
     def _on_export_selected(self):
         """导出选中题目"""
+        if not self.loading_container.isHidden():
+            return
         selected = [
             question for question in self.questions
             if self._question_id(question) in self._selected_question_ids
@@ -919,6 +988,8 @@ class QuestionListFluent(QWidget):
     
     def _on_export_all(self):
         """导出全部题目"""
+        if not self.loading_container.isHidden():
+            return
         if self.questions:
             homework_title = self.current_homework.get('title', '作业题目') if self.current_homework else '作业题目'
             course_name = self.current_homework.get('course_name', '') if self.current_homework else ''
@@ -930,22 +1001,33 @@ class QuestionListFluent(QWidget):
         self.type_combo.setEnabled(not loading)
         self.status_combo.setEnabled(not loading)
         self.export_all_btn.setEnabled(not loading)
+        self.export_selected_btn.setEnabled(not loading and bool(self._selected_question_ids))
         
         if loading:
+            if self.loading_container.isHidden():
+                self._content_before_loading = (
+                    'scroll' if not self.scroll_area.isHidden() else 'empty'
+                )
             self.scroll_area.hide()
             self.empty_container.hide()
             self.loading_container.show()
         else:
             self.loading_container.hide()
-            # 不在这里决定显示 scroll_area 还是 empty_container
-            # 由 _display_questions() / _on_questions_loaded() 负责
+            if self.scroll_area.isHidden() and self.empty_container.isHidden():
+                if getattr(self, '_content_before_loading', 'empty') == 'scroll' and self.filtered_questions:
+                    self.scroll_area.show()
+                else:
+                    self.empty_container.show()
     
     def clear_data(self):
         """清空数据"""
+        self._cleanup_worker()
+        self._filter_timer.stop()
         self.questions = []
         self.filtered_questions = []
         self.question_cards = []
         self._selected_question_ids.clear()
+        self._question_order = {}
         self.select_all_cb.blockSignals(True)
         self.select_all_cb.setChecked(False)
         self.select_all_cb.blockSignals(False)
@@ -958,6 +1040,7 @@ class QuestionListFluent(QWidget):
         self.empty_container.set_message("请选择作业解析题目", show_action=False)
         self.scroll_area.hide()
         self.empty_container.show()
+        self._set_loading(False)
         
         # 重置统计
         if hasattr(self.total_label, '_value_label'):

@@ -236,12 +236,18 @@ class MainWindowFluent(FluentWindow):
         """尝试恢复保存的登录状态（异步）"""
         self._login_restore_worker = LoginRestoreWorker(self)
         self._login_restore_worker.restore_finished.connect(self._on_login_restored)
+        self._login_restore_worker.finished.connect(self._release_login_restore_worker)
         self._login_restore_worker.start()
+
+    def _release_login_restore_worker(self):
+        worker = self.sender()
+        if self._login_restore_worker is worker:
+            self._login_restore_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _on_login_restored(self, login_mgr, user_info):
         """登录恢复完成回调"""
-        self._login_restore_worker = None
-
         if login_mgr is None or user_info is None:
             return
 
@@ -863,7 +869,7 @@ class UpdateInfoDialog(MessageBoxBase):
         btn_layout.addWidget(browser_btn)
         
         # 直接下载按钮（如果有下载链接）
-        if update_info.get("download_url"):
+        if update_info.get("download_url") and update_info.get("sha256_url"):
             download_btn = PrimaryPushButton("下载到本地", self)
             download_btn.setIcon(FIF.DOWNLOAD)
             download_btn.clicked.connect(self._download_to_local)
@@ -897,6 +903,18 @@ class UpdateInfoDialog(MessageBoxBase):
         from PySide6.QtWidgets import QFileDialog
         from pathlib import Path
         
+        if not self.update_info.get("sha256_url"):
+            InfoBar.warning(
+                title="无法安全下载",
+                content="该版本未提供 SHA256 校验文件，请使用浏览器查看发布页。",
+                orient=Qt.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self.window(),
+            )
+            return
+
         # 选择保存位置（优先使用 release 资产原始文件名）
         default_name = self.update_info.get("download_name") or f"CXHarvest-setup-v{self.update_info['version']}-win64.exe"
         suffix = Path(default_name).suffix.lower()
@@ -1029,7 +1047,7 @@ class UpdateInfoDialog(MessageBoxBase):
         try:
             import subprocess
             if sys.platform == 'win32':
-                subprocess.Popen(f'explorer /select,"{save_path}"')
+                subprocess.Popen(['explorer.exe', f'/select,{os.path.normpath(save_path)}'])
             elif sys.platform == 'darwin':
                 subprocess.Popen(['open', '-R', save_path])
             else:
@@ -1068,12 +1086,17 @@ class DownloadWorker(QThread):
         """
         import sys as _sys
         import subprocess
+        import base64
         if _sys.platform != 'win32':
             return 'unknown'
         try:
+            # -EncodedCommand 避免文件名中的 PowerShell 元字符参与命令解析。
+            escaped_path = path.replace("'", "''")
+            command = f"(Get-AuthenticodeSignature -LiteralPath '{escaped_path}').Status"
+            encoded_command = base64.b64encode(command.encode('utf-16le')).decode('ascii')
             result = subprocess.run(
                 ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-                 '-Command', f'(Get-AuthenticodeSignature -FilePath "{path}").Status'],
+                 '-EncodedCommand', encoded_command],
                 capture_output=True, timeout=20,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             # 不用 text=True：中文 Windows 的 PowerShell 输出是 GBK，
@@ -1099,7 +1122,12 @@ class DownloadWorker(QThread):
         tmp_path = self.save_path + ".tmp"
 
         try:
-            resp = requests.get(self.url, stream=True, timeout=30)
+            if not self.sha256_url:
+                self.download_finished.emit(
+                    False, "发布版本未提供 SHA256 校验文件，已拒绝直接下载", "", "")
+                return
+
+            resp = requests.get(self.url, stream=True, timeout=(10, 30))
             resp.raise_for_status()  # 检查 HTTP 状态码
             total_size = int(resp.headers.get("content-length", 0))
 
@@ -1107,33 +1135,36 @@ class DownloadWorker(QThread):
             start_time = time.time()
             sha256_hash = hashlib.sha256()
 
-            with open(tmp_path, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    if self._cancelled:
-                        break
-                    if chunk:
-                        f.write(chunk)
-                        sha256_hash.update(chunk)
-                        downloaded += len(chunk)
+            try:
+                with open(tmp_path, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=64 * 1024):
+                        if self._cancelled:
+                            break
+                        if chunk:
+                            f.write(chunk)
+                            sha256_hash.update(chunk)
+                            downloaded += len(chunk)
 
-                        if total_size > 0:
-                            percentage = int(downloaded * 100 / total_size)
-                        else:
-                            percentage = 0
-
-                        elapsed = time.time() - start_time
-                        if elapsed > 0:
-                            speed = downloaded / elapsed
-                            if speed > 1024 * 1024:
-                                speed_str = f"{speed / 1024 / 1024:.1f} MB/s"
-                            elif speed > 1024:
-                                speed_str = f"{speed / 1024:.1f} KB/s"
+                            if total_size > 0:
+                                percentage = min(100, int(downloaded * 100 / total_size))
                             else:
-                                speed_str = f"{speed:.0f} B/s"
-                        else:
-                            speed_str = "计算中..."
+                                percentage = 0
 
-                        self.progress_updated.emit(percentage, speed_str)
+                            elapsed = time.time() - start_time
+                            if elapsed > 0:
+                                speed = downloaded / elapsed
+                                if speed > 1024 * 1024:
+                                    speed_str = f"{speed / 1024 / 1024:.1f} MB/s"
+                                elif speed > 1024:
+                                    speed_str = f"{speed / 1024:.1f} KB/s"
+                                else:
+                                    speed_str = f"{speed:.0f} B/s"
+                            else:
+                                speed_str = "计算中..."
+
+                            self.progress_updated.emit(percentage, speed_str)
+            finally:
+                resp.close()
 
             if self._cancelled:
                 try:
@@ -1143,28 +1174,30 @@ class DownloadWorker(QThread):
                 return
 
             # SHA256 校验（发布版本必须通过校验才允许使用）
-            if self.sha256_url:
-                try:
-                    sha_resp = requests.get(self.sha256_url, timeout=15)
+            try:
+                with requests.get(self.sha256_url, timeout=(10, 15)) as sha_resp:
                     sha_resp.raise_for_status()
                     # 格式: "hash  filename"
                     expected_hash = sha_resp.text.strip().split()[0].lower()
+                    if len(expected_hash) != 64 or any(
+                            c not in '0123456789abcdef' for c in expected_hash):
+                        raise ValueError("SHA256 文件格式无效")
                     actual_hash = sha256_hash.hexdigest().lower()
                     if expected_hash != actual_hash:
                         os.remove(tmp_path)
                         self.download_finished.emit(False, "SHA256 校验失败，文件可能已被篡改或损坏", "", "")
                         return
-                except Exception as sha_err:
-                    # 校验文件缺失 / 获取失败：视为不可信，中止下载，不允许静默跳过
-                    from core.enterprise_logger import app_logger
-                    app_logger.warning(f"SHA256 校验文件获取失败: {sha_err}")
-                    try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
-                    self.download_finished.emit(
-                        False, "SHA256 校验文件获取失败，已中止下载以保障安全", "", "")
-                    return
+            except Exception as sha_err:
+                # 校验文件缺失 / 获取失败：视为不可信，中止下载，不允许静默跳过
+                from core.enterprise_logger import app_logger
+                app_logger.warning(f"SHA256 校验文件获取失败: {sha_err}")
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                self.download_finished.emit(
+                    False, "SHA256 校验文件获取失败，已中止下载以保障安全", "", "")
+                return
 
             os.replace(tmp_path, self.save_path)
             # 在后台线程内校验签名（避免 PowerShell 启动耗时阻塞 UI）

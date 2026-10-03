@@ -86,6 +86,10 @@ def retire_worker(worker: Optional[QThread], wait_ms: int = 0) -> bool:
                 stop_method()
             except Exception:
                 pass
+        try:
+            worker.requestInterruption()
+        except Exception:
+            pass
 
         # 3. 已结束则直接清理
         if not worker.isRunning():
@@ -93,8 +97,9 @@ def retire_worker(worker: Optional[QThread], wait_ms: int = 0) -> bool:
             return True
 
         # 4. 仍在运行：保留模块级引用，等待结束后清理
-        worker.finished.connect(lambda w=worker: _finalize_worker(w))
-        _retired_workers.append(worker)
+        if worker not in _retired_workers:
+            worker.finished.connect(lambda w=worker: _finalize_worker(w))
+            _retired_workers.append(worker)
 
         if wait_ms > 0:
             worker.wait(wait_ms)

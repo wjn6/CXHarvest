@@ -34,17 +34,20 @@ from ui.worker_lifecycle import retire_worker
 class ExportWorker(QThread):
     """导出工作线程（支持取消 + .tmp 安全写入）"""
     progress = Signal(str, int)
-    export_done = Signal(dict)      # 不覆盖 QThread.finished，否则 retire_worker 收不到线程结束
+    export_finished = Signal(dict)  # 不覆盖 QThread.finished，否则 retire_worker 收不到线程结束
     cancelled = Signal(dict)   # 取消时发出，携带已完成部分
     error = Signal(str)
     
     def __init__(self, exporter: QuestionExporter, output_dir: str, 
                  formats: List[str], base_name: str, html_template_id: str = 'default'):
         super().__init__()
+        from core.common import sanitize_filename
+
         self.exporter = exporter
         self.output_dir = output_dir
         self.formats = formats
-        self.base_name = base_name
+        # ExportWorker 也执行一次净化，避免未来其他调用方绕过对话框校验。
+        self.base_name = sanitize_filename(base_name)
         self.html_template_id = html_template_id
         self._cancelled = False
     
@@ -103,7 +106,7 @@ class ExportWorker(QThread):
                         app_logger.warning(f"导出 {fmt} 失败: {fmt_err}")
             
             self.progress.emit("导出完成", 100)
-            self.export_done.emit(results)
+            self.export_finished.emit(results)
             
         except Exception as e:
             self.error.emit(str(e))
@@ -637,9 +640,10 @@ class ExportDialog(QDialog):
             )
             return
         
-        base_name = self.filename_edit.text().strip()
-        if not base_name:
-            base_name = self._sanitize_filename(self.homework_title)
+        base_name = self._sanitize_filename(
+            self.filename_edit.text().strip() or self.homework_title
+        )
+        self.filename_edit.setText(base_name)
         
         # 创建目录
         os.makedirs(output_dir, exist_ok=True)
@@ -659,10 +663,18 @@ class ExportDialog(QDialog):
         html_template_id = self._get_selected_template_id() if 'html' in formats else 'default'
         self.export_worker = ExportWorker(exporter, output_dir, formats, base_name, html_template_id)
         self.export_worker.progress.connect(self._on_progress)
-        self.export_worker.export_done.connect(self._on_export_finished)
+        self.export_worker.export_finished.connect(self._on_export_finished)
         self.export_worker.cancelled.connect(self._on_export_cancelled)
         self.export_worker.error.connect(self._on_export_error)
+        self.export_worker.finished.connect(self._release_export_worker)
         self.export_worker.start()
+
+    def _release_export_worker(self):
+        worker = self.sender()
+        if self.export_worker is worker:
+            self.export_worker = None
+        if worker is not None:
+            worker.deleteLater()
     
     def _on_progress(self, message: str, percentage: int):
         """进度更新"""
@@ -778,7 +790,9 @@ class ExportDialog(QDialog):
         """保存导出历史记录"""
         try:
             output_dir = self.path_edit.text()
-            base_name = self.filename_edit.text().strip() or self._sanitize_filename(self.homework_title)
+            base_name = self._sanitize_filename(
+                self.filename_edit.text().strip() or self.homework_title
+            )
             
             # 获取成功导出的格式
             success_formats = [fmt for fmt, success in results.items() if success]

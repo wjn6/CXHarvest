@@ -339,8 +339,8 @@ class ExportHistoryFluent(QWidget):
         text = text.lower()
         filtered = [
             r for r in history
-            if text in r.get("course_name", "").lower()
-            or any(text in h.lower() for h in r.get("homework_titles", []))
+            if text in str(r.get("course_name") or "").lower()
+            or any(text in str(h).lower() for h in (r.get("homework_titles") or []))
         ]
         
         self._display_history(filtered)
@@ -363,11 +363,11 @@ class ExportHistoryFluent(QWidget):
         
         try:
             if platform.system() == "Windows":
-                subprocess.run(["explorer", f"/select,{file_path}"])
+                subprocess.Popen(["explorer.exe", f"/select,{os.path.normpath(file_path)}"])
             elif platform.system() == "Darwin":  # macOS
-                subprocess.run(["open", "-R", file_path])
+                subprocess.Popen(["open", "-R", file_path])
             else:  # Linux
-                subprocess.run(["xdg-open", os.path.dirname(file_path)])
+                subprocess.Popen(["xdg-open", os.path.dirname(file_path)])
         except Exception as e:
             app_logger.error(f"打开文件位置失败: {e}")
     

@@ -104,7 +104,6 @@ class VerificationCodeWorker(QThread):
         self.captcha_result = code
         self.captcha_event.set()
 
-
 class LoginWorker(QThread):
     """登录线程"""
     login_success = Signal(dict)
@@ -510,6 +509,12 @@ class LoginDialogFluent(MessageBoxBase):
         
         # 发送信号
         self.login_success.emit(user_info)
+
+        # login_success 在线程 run() 返回前发出；对话框即将关闭时先把线程
+        # 交给统一退役器持有，避免极短窗口内发生 QThread 析构竞态。
+        worker = self.login_worker
+        self.login_worker = None
+        retire_worker(worker)
         
         # 关闭对话框
         self.accept()
@@ -624,6 +629,8 @@ class LoginDialogFluent(MessageBoxBase):
             if info:
                 manager.save_login_info(info)
                 app_logger.debug("已保存登录信息")
+            else:
+                manager.clear_login_info()
         except Exception as e:
             app_logger.debug(f"保存凭据失败: {e}")
     
@@ -660,7 +667,8 @@ class LoginDialogFluent(MessageBoxBase):
         """发送验证码"""
         phone = self.phone_edit.text().strip()
         
-        if not phone or len(phone) != 11:
+        from core.common import validate_phone_number
+        if not validate_phone_number(phone):
             self._show_error("请输入正确的手机号")
             return
         

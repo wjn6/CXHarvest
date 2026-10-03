@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QFrame, QSizePolicy
 )
 import threading
+import html
 
 from PySide6.QtCore import Qt, Signal, QThread, QSize, QTimer, QRect
 from PySide6.QtGui import QImage, QPixmap, QFont, QPainter, QPainterPath, QColor
@@ -100,6 +101,16 @@ def _on_image_worker_finished():
     with _cache_lock:
         _active_image_count = max(0, _active_image_count - 1)
     _process_image_queue()
+
+
+def _remove_queued_image_worker(worker) -> bool:
+    """从尚未启动的全局队列移除 worker，避免队列持有已删除卡片的回调。"""
+    with _cache_lock:
+        for index, (queued_worker, _callback) in enumerate(_image_load_queue):
+            if queued_worker is worker:
+                _image_load_queue.pop(index)
+                return True
+    return False
 
 class CourseLoadWorker(QThread):
     """课程数据加载线程"""
@@ -278,17 +289,16 @@ class CourseCard(ElevatedCardWidget):
             _rounded_pixmap(pixmap.scaled(80, 80, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)))
     
     def _disconnect_worker(self):
-        """移出未启动的排队项并断开已建立连接（只 disconnect 会漏掉队列里尚未启动的条目）"""
+        """移出未启动的排队项，并断开已启动线程的卡片回调。"""
         worker, self.image_worker = self.image_worker, None
         if worker is None:
             return
-        with _cache_lock:
-            for entry in [e for e in _image_load_queue
-                          if getattr(e[1], '__self__', None) is self]:
-                _image_load_queue.remove(entry)
+        if _remove_queued_image_worker(worker):
+            _active_image_workers.discard(worker)
+            worker.deleteLater()
+            return
         import warnings
         with warnings.catch_warnings():
-            # 未启动过的排队项本就无连接，PySide 会对 disconnect 打 RuntimeWarning（纯噪音）
             warnings.simplefilter("ignore", RuntimeWarning)
             try:
                 worker.image_loaded.disconnect(self._on_image_loaded)
@@ -296,6 +306,7 @@ class CourseCard(ElevatedCardWidget):
                 pass
     
     def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
         if event.button() == Qt.LeftButton:
             self.course_clicked.emit(self.course_info)
     
@@ -320,10 +331,12 @@ class CourseCard(ElevatedCardWidget):
         if not keyword:
             return text
         # 不区分大小写的替换
-        pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+        escaped_keyword = html.escape(str(keyword))
+        pattern = re.compile(re.escape(escaped_keyword), re.IGNORECASE)
+        escaped_text = html.escape(str(text))
         highlighted = pattern.sub(
             lambda m: f'<span style="background-color: #fff3cd; color: #856404; font-weight: bold;">{m.group()}</span>',
-            text
+            escaped_text
         )
         return highlighted
     
@@ -343,6 +356,7 @@ class CourseListFluent(QWidget):
         self.setObjectName("CourseListInterface")
         
         self.courses = []
+        self.filtered_courses = []
         self.card_widgets = [] # 存储所有卡片实例
         self.login_manager = None
         self.load_worker = None
@@ -522,18 +536,21 @@ class CourseListFluent(QWidget):
         
         # 启动加载线程
         self.load_worker = CourseLoadWorker(login_manager, force_refresh)
-        self.load_worker.courses_loaded.connect(
+        worker = self.load_worker
+        worker.courses_loaded.connect(
             lambda courses, g=gen: self._on_courses_loaded(courses, g))
-        self.load_worker.error_occurred.connect(
+        worker.error_occurred.connect(
             lambda msg, g=gen: self._on_load_error(msg, g))
-        self.load_worker.finished.connect(lambda g=gen: self._on_load_finished(g))
-        self.load_worker.start()
+        worker.finished.connect(lambda g=gen, w=worker: self._on_load_finished(g, w))
+        worker.start()
 
-    def _on_load_finished(self, gen: int):
+    def _on_load_finished(self, gen: int, worker):
         """加载线程结束"""
-        if self._is_stale(gen):
-            return
-        self._set_loading(False)
+        if not self._is_stale(gen):
+            self._set_loading(False)
+            if self.load_worker is worker:
+                self.load_worker = None
+        worker.deleteLater()
     
     def _on_courses_loaded(self, courses: list, gen: int = None):
         """课程加载完成"""
@@ -559,6 +576,8 @@ class CourseListFluent(QWidget):
             return
         # 如果是登录过期，提示重新登录
         if '登录' in error_msg and ('过期' in error_msg or '失效' in error_msg or '未登录' in error_msg):
+            self.empty_container.set_message("登录已失效，请重新登录", show_action=True)
+            self._show_empty_state()
             InfoBar.warning(
                 title="登录已失效",
                 content="请重新登录后再试",
@@ -570,6 +589,10 @@ class CourseListFluent(QWidget):
             )
             self.login_required.emit()
             return
+
+        if not self.courses:
+            self.empty_container.set_message("课程加载失败，请重试", show_action=False)
+            self._show_empty_state()
         
         InfoBar.error(
             title="加载失败",
@@ -607,8 +630,8 @@ class CourseListFluent(QWidget):
         self.filtered_courses = []
         for course in self.courses:
             # 关键词匹配
-            name = course.get('name', '').lower()
-            teacher = course.get('teacher', '').lower()
+            name = str(course.get('name') or '').lower()
+            teacher = str(course.get('teacher') or '').lower()
             if keyword and keyword not in name and keyword not in teacher:
                 continue
             
@@ -729,22 +752,36 @@ class CourseListFluent(QWidget):
         self.status_combo.setEnabled(not loading)
         
         if loading:
+            if self.loading_container.isHidden():
+                self._content_before_loading = (
+                    'scroll' if not self.scroll_area.isHidden() else 'empty'
+                )
             self.scroll_area.hide()
             self.empty_container.hide()
             self.loading_container.show()
         else:
             self.loading_container.hide()
-            # 不在这里决定显示 scroll_area 还是 empty_container
-            # 由 _display_courses() / _on_courses_loaded() 负责
+            if self.scroll_area.isHidden() and self.empty_container.isHidden():
+                if getattr(self, '_content_before_loading', 'empty') == 'scroll' and self.filtered_courses:
+                    self.scroll_area.show()
+                else:
+                    self.empty_container.show()
     
     def clear_data(self):
         """清空数据"""
+        self._cleanup_workers()
+        self._load_generation += 1
+        if getattr(self, '_batch_timer', None):
+            self._batch_timer.stop()
+            self._batch_timer = None
         self.courses = []
+        self.filtered_courses = []
         self._clear_content()
         
         # 显示登录提示
         self.empty_container.set_message("暂无课程数据，请先登录", show_action=True)
         self._show_empty_state()
+        self._set_loading(False)
         
         self.stats_label.setText("")
     

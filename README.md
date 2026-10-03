@@ -176,14 +176,28 @@ python main.py
 ### 构建发布版
 
 ```bash
+# 首次构建需安装 PyInstaller
+python -m pip install pyinstaller
+
 # 使用打包脚本（推荐）
 python build.py
 
 # 快速重复打包（跳过 clean）
 python build.py --no-clean
+
+# 仅检查构建配置，不实际打包
+python build.py --dry-run
 ```
 
 > 说明: 推送 `v*.*.*` 格式的 tag 后，GitHub Actions 会自动构建 Setup 安装包并发布 Release。
+
+### 运行测试
+
+测试仅使用 Python 标准库的 `unittest`，无需额外安装测试框架：
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ---
 
@@ -294,7 +308,8 @@ python build.py --no-clean
 <details>
 <summary><b>❓ 导出文件位置</b></summary>
 
-默认保存在应用目录的 `exports/` 文件夹，导出完成后会自动打开目录。
+发布版默认保存在桌面的 `CXHarvest_exports` 文件夹；源码版默认保存在项目的
+`exports/` 文件夹。导出完成后会自动打开对应目录。
 
 </details>
 

@@ -25,6 +25,7 @@ from bs4 import BeautifulSoup
 # =============================================================================
 from .session_manager import SessionManagerMixin
 from .enterprise_logger import app_logger, network_logger
+from .exceptions import AppError, LoginError, NetworkError, ParseError
 
 class HomeworkManager(SessionManagerMixin):
     """作业管理器
@@ -127,7 +128,8 @@ class HomeworkManager(SessionManagerMixin):
         """从session中获取用户ID"""
         try:
             # 方法1：访问用户主页获取ID
-            response = self.get_session().get('https://i.chaoxing.com/base', headers=self.headers)
+            response = self.get_session().get(
+                'https://i.chaoxing.com/base', headers=self.headers, timeout=15)
             if response.status_code == 200:
                 # 尝试从页面JavaScript变量中提取用户ID
                 content = response.text
@@ -186,7 +188,7 @@ class HomeworkManager(SessionManagerMixin):
                 'ismooc2': '1'
             }
 
-            response = session.get(course_url, params=params, headers=self.headers)
+            response = session.get(course_url, params=params, headers=self.headers, timeout=30)
 
             if response.status_code != 200:
                 app_logger.error(f"访问课程主页失败，状态码: {response.status_code}")
@@ -358,13 +360,15 @@ class HomeworkManager(SessionManagerMixin):
                 if '<title>用户登录</title>' in resp_text or 'passport2.chaoxing.com/login' in resp_text:
                     app_logger.warning(f"作业列表API返回了登录页面，session已失效")
                     self.invalidate_session()
-                    return None
+                    raise LoginError("登录已过期，请重新登录")
                 app_logger.success(f" 成功获取 {course_name} 的作业列表")
                 return resp_text
             else:
                 app_logger.error(f" 获取 {course_name} 作业列表失败，状态码: {response.status_code}")
                 return None
 
+        except LoginError:
+            raise
         except Exception as e:
             app_logger.error(f" 访问 {course_name} 作业列表失败: {e}")
             return None
@@ -846,7 +850,7 @@ class HomeworkManager(SessionManagerMixin):
             course_params = self.extract_course_params(course_data)
             if not course_params:
                 app_logger.info(f" 无法提取课程 {course_name} 的参数")
-                return []
+                raise ParseError("课程参数不完整，无法加载作业列表")
             
             # 获取加密参数
             encryption_params = self.get_encryption_params(
@@ -856,7 +860,7 @@ class HomeworkManager(SessionManagerMixin):
             )
             if not encryption_params:
                 app_logger.info(f" 无法获取课程 {course_name} 的加密参数")
-                return []
+                raise ParseError("无法获取课程访问参数，请刷新课程后重试")
             
             # 构建作业列表基础URL
             base_homework_url = self.build_homework_url(
@@ -870,7 +874,7 @@ class HomeworkManager(SessionManagerMixin):
             first_page_content = self.fetch_homework_list_online(base_homework_url, course_name)
             if not first_page_content:
                 app_logger.info(f" 无法获取课程 {course_name} 的作业列表页面")
-                return []
+                raise NetworkError("无法获取作业列表，请检查网络后重试")
             
             # 解析第一页并获取总页数
             from bs4 import BeautifulSoup
@@ -929,6 +933,8 @@ class HomeworkManager(SessionManagerMixin):
             app_logger.info(f" 课程 {course_name} 共找到 {len(unique_homework)} 个作业（去重后）")
             return unique_homework
             
+        except AppError:
+            raise
         except Exception as e:
             app_logger.error(f" 获取作业列表失败: {e}")
             return []
